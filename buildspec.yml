@@ -1,0 +1,28 @@
+version: 0.2
+env:
+  shell: bash
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - docker info
+      - python -c 'import boto3'
+  pre_build:
+    commands:
+      - '[[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]'
+      - 'test "$IMAGE_TAG" = "src-${SOURCE_SHA256:0:16}"'
+      - python scripts/ecr-build.py login
+  build:
+    on-failure: ABORT
+    commands:
+      - >-
+        docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load
+        --label "com.recomate.source-sha256=$SOURCE_SHA256"
+        --tag "$ECR_REPOSITORY_URI:$IMAGE_TAG" .
+      - bash scripts/container-smoke.sh "$ECR_REPOSITORY_URI:$IMAGE_TAG"
+  post_build:
+    commands:
+      - test "$CODEBUILD_BUILD_SUCCEEDING" = 1
+      - docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"
+      - python scripts/ecr-build.py digest
