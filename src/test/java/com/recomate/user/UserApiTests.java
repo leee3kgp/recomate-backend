@@ -1,5 +1,6 @@
 package com.recomate.user;
 
+import com.recomate.genre.Genre;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -159,6 +160,20 @@ class UserApiTests {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
         verify(users, never()).replaceGenres(anyString(), anyList());
+    }
+
+    @Test
+    void everyCatalogGenreCanBeSavedAsAPreference() throws Exception {
+        List<String> codes = Genre.all().stream().map(Enum::name).toList();
+        when(users.find(OWNER)).thenReturn(Optional.of(USER));
+        when(users.replaceGenres(OWNER, codes)).thenReturn(new UserRecord(
+                OWNER, USER.email(), USER.nickname(), codes, UserRecord.Status.ACTIVE, null));
+        String body = "{\"genres\":[\"" + String.join("\",\"", codes) + "\"]}";
+        mvc.perform(put("/api/users/me/genres").with(jwt().jwt(token -> token.subject(OWNER)))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.genres", org.hamcrest.Matchers.contains(codes.toArray(String[]::new))));
+        verify(users).replaceGenres(OWNER, codes);
     }
 
     @Test

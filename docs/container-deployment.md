@@ -4,6 +4,14 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## 장르 목록 API 추가 — 로컬 구현, 미배포
+
+장르 목록 `GET /api/genres`와 CORS 사전 요청 `OPTIONS /api/genres`를 기존 사용자 API Lambda에 연결하도록 `infra/user-api.yaml`을 확장했습니다. GET에는 기존 Cognito Authorizer를 적용하고 OPTIONS만 인증 없이 전달합니다. 별도 Lambda·장르 테이블·런타임 데이터 권한은 추가하지 않습니다. 공통 탈퇴 상태 검사에는 기존 사용자 테이블 GetItem 권한을 사용합니다.
+
+기존 사용자 경로의 호출 권한을 유지하고 장르 경로만 허용하는 별도 Lambda Permission을 추가했습니다. API Gateway Deployment는 생성 시점의 경로 스냅샷이므로, `ApiDeploymentGenreCatalogV1`을 새로 생성하고 기존 dev Stage가 이를 가리키도록 구성했습니다. 이후 Gateway 경로·메서드·통합을 변경할 때도 새 스냅샷이 생성되도록 Deployment 논리 ID를 갱신해야 합니다. 기존 JWT 테스트 Stage는 변경하지 않습니다.
+
+장르 API 변경의 실제 AWS 배포·Cognito 실토큰 호출·FE 연결은 아직 진행하지 않았습니다. 아래 기존 배포 이미지와 53개 검증 기록은 사용자 API 이전 이미지에 대한 결과입니다. [장르 명세](genre-api.md)를 함께 확인합니다.
+
 ## 공통 실행 기준
 
 실제 값은 [Dockerfile](../Dockerfile)과 [Compose](../compose.yaml)에서 관리합니다.

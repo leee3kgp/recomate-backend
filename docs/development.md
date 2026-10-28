@@ -55,6 +55,12 @@ API는 Cognito ID Token의 Bearer 인증을 사용합니다. 브라우저에는 
 
 CORS의 기본 허용 주소는 `http://localhost:5173`, `http://127.0.0.1:5173`입니다. 프론트 실행 포트나 배포 주소가 다르면 `CORS_ALLOWED_ORIGINS`에 정확한 origin을 쉼표로 구분해 지정합니다. 로컬 Spring 설정은 `src/main/resources/application-local.properties`에 저장하고 `local` 프로필로 실행할 수 있습니다. 이 파일은 Git과 Docker 빌드에서 제외됩니다. 컨테이너에서는 실행 시 환경 변수로 주입합니다.
 
+## 장르 목록 API
+
+`GET /api/genres`는 인증된 사용자에게 내부 장르 10개를 `{ "genres": [{ "code": "ACTION", "name": "액션" }, ...] }` 형식으로 반환합니다. 기존 FE 순서를 유지하며 개인 선호 장르를 읽거나 변경하지 않습니다. 사용자 API의 장르 코드 검증도 공통 `Genre` 정의를 사용합니다.
+
+장르 목록을 위한 별도 DB·TMDB 호출은 없지만, 공통 탈퇴 상태 검사에는 사용자 테이블 접근이 필요합니다. 앱 프로필이 없어도 목록을 조회할 수 있으며 프로필을 생성하지 않습니다. 오류·전체 응답·FE 연결 안내는 [장르 목록 API](genre-api.md)와 [OpenAPI](openapi.yaml)를 참고합니다. 현재 로컬 구현이며 AWS 배포와 FE 연결은 아직 진행하지 않았습니다.
+
 ## 사용자 API와 저장소
 
 사용자 API 5개는 `/api/users/me`, `/api/users/me/genres`에 있습니다. 입출력·오류·저장 구조는 [OpenAPI 명세](openapi.yaml)를 따릅니다. 닉네임은 DynamoDB가 기준이며, 프론트 화면은 프로필 API의 nickname을 표시합니다. 가입 시에만 Cognito에서 이메일과 닉네임을 가져옵니다.
@@ -100,10 +106,13 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 
 컨테이너 CI는 Compose v2.39.4를 명시하고 CodeBuild와 같은 401·CORS 검증 스크립트를 사용합니다. Compose 설정 검사와 actionlint 1.7.12 문법 검사는 통과했으며, 수정된 GitHub Actions 전체 실행은 아직 확인하지 않았습니다. 이 결과가 팀원의 코드 리뷰나 실제 BE2 기능과의 통합 검증을 대체하지 않습니다.
 
+2026-10-28 장르 목록 API 추가 후에는 임시 DynamoDB Local을 포함한 전체 테스트 92개(실패·건너뜀 0개)와 JAR 빌드를 통과했습니다. 코드·표시명·순서와 개인 선호 장르 검증의 일치, JWT·탈퇴 상태·CORS 처리를 확인했습니다. 장르 API의 명세와 배포 템플릿은 로컬 검증 상태이며, AWS 배포·실제 컨테이너 재빌드·FE 연결은 아직 진행하지 않았습니다.
+
 개발용 API 기준 주소는 `https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev`이며, 예를 들어 프로필 경로는 이 주소 뒤에 `/api/users/me`를 붙입니다. 실제 배포 테이블은 `recomate-user-api-dev-users`, `recomate-user-api-dev-validation-sessions`입니다. 로컬에서 같은 테이블을 쓰려면 이 이름을 USERS_TABLE·SESSIONS_TABLE에 지정하고 별도의 개발자 인증을 연결합니다. 첫 호출이 약 26.3초로 관측되어 Lambda 메모리를 1536 MiB에서 3008 MiB로 조정했고, 업데이트 직후 첫 사전 요청은 7.4초, 연속 사전 요청은 0.65초였습니다. 이는 개별 측정이며 부하·동시 콜드 스타트 성능은 별도 검증 대상입니다.
 
 ## 관련 문서
 
 - [컨테이너 구성과 AWS 배포](container-deployment.md)
+- [장르 목록 API](genre-api.md)
 - [프론트·API 명세 호환성 점검 기록](frontend-container-review.md)
 - [Docker Desktop 설치 안내](https://docs.docker.com/desktop/setup/install/windows-install/)

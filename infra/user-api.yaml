@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy the user API behind the existing REST API and Cognito authorizer, with isolated dev data and digest-pinned Lambda image.
+Description: Deploy user and genre APIs behind the existing REST API and Cognito authorizer, with isolated dev data and a digest-pinned Lambda image.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -7,6 +7,9 @@ Metadata:
     ref:
       - at: docs/openapi.yaml
         has: API contract and DynamoDB item lifecycle
+        scope: shared
+      - at: docs/container-deployment.md
+        has: Genre route integration and API deployment snapshot lifecycle
         scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
@@ -181,6 +184,46 @@ Resources:
   GenresResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref MeResource, PathPart: genres}
+  GenreCatalogResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Expose the shared catalog separately from each user's saved preferences.
+        must: [Keep this route under the existing API prefix.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: genres}
+  GenreCatalogGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Serve the fixed genre master through the existing authenticated Spring application.
+        must: [Apply the existing Cognito authorizer., Preserve the full API path in Lambda proxy requests.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GenreCatalogResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  GenreCatalogOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Let Spring validate browser preflight origins before an authenticated catalog request.
+        must: [Keep preflight unauthenticated; catalog GET remains protected.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GenreCatalogResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
   ProfileGet:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -278,17 +321,33 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/users/me*'
-  ApiDeployment:
+  GenreCatalogInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow the catalog GET and preflight to reach the same function without widening user-route permissions.
+        must: ['Restrict invocation to this project, API, Stage and catalog path.']
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/genres'
+  ApiDeploymentGenreCatalogV1:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions]
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Create a fresh route snapshot so the existing Stage actually publishes the added catalog methods.
+        must: [Wait for all application methods before creating the snapshot., Change this logical ID for subsequent routing changes.]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, GenreCatalogGet, GenreCatalogOptions]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate user API deployment
+      Description: RecoMate user and genre catalog API deployment
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeployment
+      DeploymentId: !Ref ApiDeploymentGenreCatalogV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'
