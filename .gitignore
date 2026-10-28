@@ -4,6 +4,7 @@
 # Gradle
 .gradle/
 build/
+/dynamodb-local-metadata.json
 
 # IntelliJ IDEA
 .idea/
@@ -22,5 +23,7 @@ build/
 
 # Environment / Secrets
 .env
+.env.*
 application-local.properties
 application-local.yml
+application-local.yaml

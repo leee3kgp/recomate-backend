@@ -1,0 +1,218 @@
+openapi: 3.1.0
+info:
+  title: RecoMate User API
+  version: 0.1.0
+  description: |
+    Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
+    The response fields, nickname handling and withdrawal lifecycle below are the confirmed
+    BE1 implementation policy. Integration with the actual BE2 RecommendationSession schema
+    and any additional recommendation storage remains pending.
+    Identity is always verified JWT sub; client-supplied userId cannot select another user.
+    DynamoDB is authoritative for the app nickname; Cognito only supplies the initial profile.
+    Nicknames are non-unique display names; userId (verified sub) is the identity key.
+    Nicknames are trimmed (Unicode whitespace) and validated as 1-20 Unicode code points.
+    Missing/invalid initial Cognito nicknames require user re-entry via PATCH; no default
+    nickname is assigned. This recoverable state is 409 NICKNAME_REQUIRED.
+    Withdrawal removes profile, genres, session items (including embedded recommendations),
+    and the Cognito user. A failure returns 500 and retains DELETING state for retry.
+    The session adapter currently targets the reference schema in x-dynamodb; actual BE2
+    table mapping and complete recommendation-storage coverage must be verified separately.
+    After completion a minimal sub/status/expiry marker remains for 48 hours (asynchronous TTL).
+    All protected API routes reject DELETING/DELETED subjects even with an unexpired ID Token.
+    The previous development image passed 53 live assertions on 2026-10-27.
+    The NICKNAME_REQUIRED response change is currently local and not yet deployed.
+servers:
+  - url: http://localhost:8080
+  - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
+security:
+  - CognitoIdToken: []
+paths:
+  /api/users/me:
+    get:
+      operationId: getMyProfile
+      summary: Get own profile, creating it on first access
+      description: |
+        Initial email/nickname comes from Cognito AdminGetUser using verified sub.
+        Concurrent creation preserves the first stored profile. Invalid or missing Cognito
+        nickname returns 409 NICKNAME_REQUIRED so the client can request re-entry.
+        A valid PATCH can initialize the profile with the requested nickname to repair it;
+        no automatic fallback nickname is assigned.
+      responses:
+        '200':
+          description: Own profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Profile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/NicknameRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      operationId: updateMyNickname
+      summary: Change the app nickname
+      description: Only nickname is mutable; email and userId cannot be modified through this endpoint. If the app profile is missing, initialize it with the Cognito email and the validated requested nickname, even if the old Cognito nickname is invalid. Subsequent app changes never rewrite Cognito.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [nickname]
+              properties:
+                nickname:
+                  type: string
+                  description: Trim surrounding Unicode whitespace, then require 1-20 Unicode code points. Blank or control-character-containing nicknames are rejected. The raw string may be longer before trimming.
+                  minLength: 1
+                  x-normalized-max-length: 20
+                  examples: [정우]
+      responses:
+        '200':
+          description: Updated profile; Cognito nickname is not rewritten
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Profile' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: withdraw
+      summary: Withdraw and delete own personal data and recommendations
+      description: |
+        Begin a durable DELETING state and remove profile/genres, delete all own session items,
+        delete the Cognito user, then mark DELETED with a TTL. No successful response is sent
+        before every step completes. Repeat DELETE resumes incomplete work; already completed
+        withdrawal returns 204. Nonexistent Cognito user is treated as already deleted.
+        After token expiration an authorized operator can resume the persisted deletion job.
+        On 204 the client clears its locally stored authentication tokens and returns to a
+        signed-out screen. A failed deletion does not restore ACTIVE state.
+      responses:
+        '204': { description: Withdrawal completed; no response body }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/users/me/genres:
+    get:
+      operationId: getMyGenres
+      summary: Get own preferred genres
+      description: Returns an empty array if no profile or preferred genres exist. Does not create a profile.
+      responses:
+        '200':
+          description: Preferred genres
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Genres' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: replaceMyGenres
+      summary: Replace all preferred genres; empty array clears them
+      description: If profile initialization requires a valid nickname first, return 409 NICKNAME_REQUIRED without saving genres. Submit a valid nickname through PATCH /api/users/me, then retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Genres' }
+      responses:
+        '200':
+          description: Complete replacement genre list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Genres' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/NicknameRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  securitySchemes:
+    CognitoIdToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Cognito ID Token. Check RS256 signature, issuer, audience, token_use=id, nonblank sub, exp and nbf.
+  schemas:
+    Profile:
+      type: object
+      additionalProperties: false
+      required: [userId, email, nickname]
+      properties:
+        userId: { type: string, description: Cognito sub }
+        email: { type: string, format: email }
+        nickname: { type: string, minLength: 1, maxLength: 20, description: Non-unique display name; never used as an identity key }
+    Genres:
+      type: object
+      additionalProperties: false
+      required: [genres]
+      properties:
+        genres:
+          type: array
+          minItems: 0
+          maxItems: 10
+          uniqueItems: true
+          items:
+            type: string
+            enum: [ACTION, COMEDY, ROMANCE, DRAMA, SF, FANTASY, HORROR, CRIME, MYSTERY, ANIMATION]
+          examples: [[ACTION, SF], []]
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+  responses:
+    InvalidRequest:
+      description: VALIDATION_ERROR - missing/null/incorrect type, malformed JSON, unknown fields, invalid nickname or genre codes, duplicate genres
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: VALIDATION_ERROR, message: 입력값을 확인해주세요. } }
+    Unauthorized:
+      description: UNAUTHORIZED - missing/invalid/expired JWT, wrong client/token type, or withdrawing/withdrawn user
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: UNAUTHORIZED, message: 인증이 필요합니다. } }
+    NicknameRequired:
+      description: NICKNAME_REQUIRED - initial Cognito nickname is missing or invalid; request user input and PATCH a valid nickname before retrying. Do not assign a fallback or treat general 500 errors as this state.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: NICKNAME_REQUIRED, message: 닉네임을 1~20자로 다시 입력해주세요. } }
+    InternalError:
+      description: INTERNAL_ERROR - storage/provider/cleanup failure; withdrawal may require retry
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: INTERNAL_ERROR, message: 요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요. } }
+x-dynamodb:
+  region: ap-southeast-2
+  users:
+    partitionKey: { name: userId, type: S, source: verified JWT sub }
+    attributes:
+      active: { userId: S, status: 'S=ACTIVE', email: S, nickname: S, genres: L }
+      deleting: { userId: S, status: 'S=DELETING' }
+      deleted: { userId: S, status: 'S=DELETED', expiresAt: 'N (epoch seconds)' }
+    indexes: []
+    streams: disabled
+    capacity: PAY_PER_REQUEST
+    encryption: AWS-owned key (default)
+    pointInTimeRecovery: recommended
+    deletionProtection: recommended
+    ttlAttribute: expiresAt
+    accessPatterns:
+      - GetItem by userId; consistentRead=true, no filter
+      - PutItem with attribute_not_exists(userId); concurrent creation re-reads existing item
+      - UpdateItem nickname or genres with attribute_exists(userId) AND status=ACTIVE
+      - UpdateItem deletion state; intentional upsert only for first withdrawal without profile
+    idempotency: GET initialization is conditional; PATCH/PUT replace fields; DELETE resumes persisted state
+  sessions:
+    ownerIssue: '#3'
+    partitionKey: { name: userId, type: S }
+    sortKey: { name: sessionId, type: S }
+    recommendations: Embedded in session items; deleting a session removes its results
+    erase: Query own partition consistently, paginate, BatchWriteItem in groups of 25, retry unprocessed items with bounded exponential backoff
+    integrationRequirement: New session writes must check user status ACTIVE atomically in the same DynamoDB transaction to prevent racing withdrawal. Ensure app profile exists before this transaction.
