@@ -37,4 +37,12 @@ status=$(curl --silent --output /dev/null --dump-header "$headers" --write-out '
   --header 'Access-Control-Request-Headers: authorization,content-type' http://localhost:18080/api/users/me)
 [ "$status" = 200 ]
 grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
-echo 'Read-only container started; unauthenticated request=401, CORS preflight=200.'
+status=$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST \
+  --header 'Content-Type: application/json' --data '{}' http://localhost:18080/api/sessions)
+[ "$status" = 401 ]
+status=$(curl --silent --output /dev/null --dump-header "$headers" --write-out '%{http_code}' \
+  --request OPTIONS --header "Origin: $origin" --header 'Access-Control-Request-Method: POST' \
+  --header 'Access-Control-Request-Headers: authorization,content-type' http://localhost:18080/api/sessions)
+[ "$status" = 200 ]
+grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
+echo 'Read-only container started; user/session authentication=401, CORS preflights=200.'

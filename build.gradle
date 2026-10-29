@@ -20,6 +20,7 @@ repositories {
 dependencies {
 	implementation platform('software.amazon.awssdk:bom:2.57.3')
 	implementation 'software.amazon.awssdk:dynamodb'
+	implementation 'software.amazon.awssdk:dynamodb-enhanced'
 	implementation 'software.amazon.awssdk:cognitoidentityprovider'
 	runtimeOnly 'software.amazon.awssdk:signin'
 	implementation 'org.springframework.boot:spring-boot-starter-security'

@@ -23,19 +23,22 @@ public class DynamoDbSessionDataEraser implements SessionDataEraser {
     public void deleteAll(String userId) {
         Map<String, AttributeValue> cursor = Map.of();
         do {
-            var query = QueryRequest.builder().tableName(table).consistentRead(true).limit(100)
-                    .keyConditionExpression("userId = :userId")
+            // The BE2 table is keyed only by sessionId. Its user GSI is eventually consistent,
+            // so it cannot prove that every pre-withdrawal session has been deleted.
+            // Once DELETING is persisted, transactional writers cannot add/update own sessions.
+            var scan = ScanRequest.builder().tableName(table).consistentRead(true).limit(100)
+                    .filterExpression("userId = :userId")
                     .expressionAttributeValues(Map.of(":userId", AttributeValue.builder().s(userId).build()))
                     .projectionExpression("userId, sessionId");
-            if (!cursor.isEmpty()) query.exclusiveStartKey(cursor);
-            var page = db.query(query.build());
+            if (!cursor.isEmpty()) scan.exclusiveStartKey(cursor);
+            var page = db.scan(scan.build());
             List<WriteRequest> deletes = new ArrayList<>();
             for (Map<String, AttributeValue> item : page.items()) {
                 if (!userId.equals(item.get("userId").s()) || item.get("sessionId") == null) {
                     throw new IllegalStateException("Unexpected session owner or schema");
                 }
                 deletes.add(WriteRequest.builder().deleteRequest(DeleteRequest.builder().key(Map.of(
-                        "userId", item.get("userId"), "sessionId", item.get("sessionId"))).build()).build());
+                        "sessionId", item.get("sessionId"))).build()).build());
                 if (deletes.size() == 25) { eraseBatch(deletes); deletes.clear(); }
             }
             if (!deletes.isEmpty()) eraseBatch(deletes);

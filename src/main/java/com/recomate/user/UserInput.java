@@ -1,14 +1,13 @@
 package com.recomate.user;
 
 import com.recomate.common.ApiException;
+import com.recomate.genre.Genre;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public final class UserInput {
-    private static final Set<String> GENRES = Set.of("ACTION", "COMEDY", "ROMANCE", "DRAMA", "SF",
-            "FANTASY", "HORROR", "CRIME", "MYSTERY", "ANIMATION");
     private UserInput() { }
 
     public static Object onlyField(Map<String, Object> body, String field) {
@@ -37,12 +36,12 @@ public final class UserInput {
     }
 
     public static List<String> genres(Object value) {
-        if (!(value instanceof List<?> values) || values.size() > GENRES.size()) {
+        if (!(value instanceof List<?> values) || values.size() > Genre.all().size()) {
             throw ApiException.validation("장르는 최대 10개의 코드 배열이어야 합니다.");
         }
         Set<String> seen = new HashSet<>();
         for (Object entry : values) {
-            if (!(entry instanceof String code) || !GENRES.contains(code) || !seen.add(code)) {
+            if (!(entry instanceof String code) || !Genre.isValidCode(code) || !seen.add(code)) {
                 throw ApiException.validation("유효한 장르 코드를 중복 없이 전달해주세요.");
             }
         }

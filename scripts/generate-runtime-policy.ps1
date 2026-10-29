@@ -12,7 +12,8 @@ if (-not (Test-Path -LiteralPath $generator)) {
 $sourceFiles = @(
     'src/main/java/com/recomate/user/infrastructure/DynamoDbUserRepository.java',
     'src/main/java/com/recomate/user/infrastructure/DynamoDbSessionDataEraser.java',
-    'src/main/java/com/recomate/user/infrastructure/CognitoIdentityDirectory.java'
+    'src/main/java/com/recomate/user/infrastructure/CognitoIdentityDirectory.java',
+    'src/main/java/com/recomate/session/repository/DynamoSessionRepository.java'
 ) | ForEach-Object { (Resolve-Path -LiteralPath (Join-Path $projectRoot $_)).Path }
 $outputDirectory = Join-Path $projectRoot '.gradle/deployment'
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null

@@ -64,8 +64,8 @@ class InfrastructureFailureTests {
         var db = mock(DynamoDbClient.class);
         var first = session("owner", "first");
         var second = session("owner", "second");
-        when(db.query(any(QueryRequest.class))).thenReturn(QueryResponse.builder().items(List.of(first, second)).build());
-        WriteRequest remaining = WriteRequest.builder().deleteRequest(DeleteRequest.builder().key(second).build()).build();
+        when(db.scan(any(ScanRequest.class))).thenReturn(ScanResponse.builder().items(List.of(first, second)).build());
+        WriteRequest remaining = WriteRequest.builder().deleteRequest(DeleteRequest.builder().key(Map.of("sessionId", second.get("sessionId"))).build()).build();
         when(db.batchWriteItem(any(BatchWriteItemRequest.class)))
                 .thenReturn(BatchWriteItemResponse.builder().unprocessedItems(Map.of("sessions", List.of(remaining))).build())
                 .thenReturn(BatchWriteItemResponse.builder().build());
@@ -74,14 +74,21 @@ class InfrastructureFailureTests {
         verify(db, times(2)).batchWriteItem(requests.capture());
         assertThat(requests.getAllValues().getFirst().requestItems().get("sessions")).hasSize(2);
         assertThat(requests.getAllValues().getLast().requestItems().get("sessions")).containsExactly(remaining);
+        assertThat(requests.getAllValues().getFirst().requestItems().get("sessions").getFirst()
+                .deleteRequest().key()).containsOnlyKeys("sessionId");
+        var scan = ArgumentCaptor.forClass(ScanRequest.class);
+        verify(db).scan(scan.capture());
+        assertThat(scan.getValue().consistentRead()).isTrue();
+        assertThat(scan.getValue().indexName()).isNull();
+        verify(db, never()).query(any(QueryRequest.class));
     }
 
     @Test
     void exhaustedBatchRetriesFailInsteadOfLosingPendingDeletion() {
         var db = mock(DynamoDbClient.class);
         var item = session("owner", "session");
-        WriteRequest pending = WriteRequest.builder().deleteRequest(DeleteRequest.builder().key(item).build()).build();
-        when(db.query(any(QueryRequest.class))).thenReturn(QueryResponse.builder().items(List.of(item)).build());
+        WriteRequest pending = WriteRequest.builder().deleteRequest(DeleteRequest.builder().key(Map.of("sessionId", item.get("sessionId"))).build()).build();
+        when(db.scan(any(ScanRequest.class))).thenReturn(ScanResponse.builder().items(List.of(item)).build());
         when(db.batchWriteItem(any(BatchWriteItemRequest.class)))
                 .thenReturn(BatchWriteItemResponse.builder().unprocessedItems(Map.of("sessions", List.of(pending))).build());
         assertThatThrownBy(() -> new DynamoDbSessionDataEraser(db, "sessions").deleteAll("owner"))
@@ -92,10 +99,25 @@ class InfrastructureFailureTests {
     @Test
     void cleanupRefusesToDeleteAnUnexpectedOwner() {
         var db = mock(DynamoDbClient.class);
-        when(db.query(any(QueryRequest.class))).thenReturn(QueryResponse.builder().items(List.of(session("victim", "session"))).build());
+        when(db.scan(any(ScanRequest.class))).thenReturn(ScanResponse.builder().items(List.of(session("victim", "session"))).build());
         assertThatThrownBy(() -> new DynamoDbSessionDataEraser(db, "sessions").deleteAll("owner"))
                 .isInstanceOf(IllegalStateException.class);
         verify(db, never()).batchWriteItem(any(BatchWriteItemRequest.class));
+    }
+
+    @Test
+    void cleanupContinuesPastAnEmptyFilteredPage() {
+        var db = mock(DynamoDbClient.class);
+        var cursor = Map.of("sessionId", AttributeValue.builder().s("other-user-session").build());
+        when(db.scan(any(ScanRequest.class))).thenReturn(
+                ScanResponse.builder().lastEvaluatedKey(cursor).build(),
+                ScanResponse.builder().items(List.of(session("owner", "own-session"))).build());
+        when(db.batchWriteItem(any(BatchWriteItemRequest.class))).thenReturn(BatchWriteItemResponse.builder().build());
+        new DynamoDbSessionDataEraser(db, "sessions").deleteAll("owner");
+        var scans = ArgumentCaptor.forClass(ScanRequest.class);
+        verify(db, times(2)).scan(scans.capture());
+        assertThat(scans.getAllValues().getLast().exclusiveStartKey()).isEqualTo(cursor);
+        verify(db).batchWriteItem(any(BatchWriteItemRequest.class));
     }
 
     @Test

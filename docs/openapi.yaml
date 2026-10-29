@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
-  title: RecoMate User API
-  version: 0.1.0
+  title: RecoMate User and Session API
+  version: 0.2.0
   description: |
     Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
     The response fields, nickname handling and withdrawal lifecycle below are the confirmed
-    BE1 implementation policy. Integration with the actual BE2 RecommendationSession schema
-    and any additional recommendation storage remains pending.
+    BE1 implementation policy. Session creation and persistence integrate the BE2 PR #9
+    sessionId schema. TMDB/scoring and the recommendation-generation HTTP API are separate.
     Identity is always verified JWT sub; client-supplied userId cannot select another user.
     DynamoDB is authoritative for the app nickname; Cognito only supplies the initial profile.
     Nicknames are non-unique display names; userId (verified sub) is the identity key.
@@ -15,18 +15,55 @@ info:
     nickname is assigned. This recoverable state is 409 NICKNAME_REQUIRED.
     Withdrawal removes profile, genres, session items (including embedded recommendations),
     and the Cognito user. A failure returns 500 and retains DELETING state for retry.
-    The session adapter currently targets the reference schema in x-dynamodb; actual BE2
-    table mapping and complete recommendation-storage coverage must be verified separately.
+    Withdrawal uses strongly consistent base-table Scan after DELETING blocks transactional
+    session/recommendation writes. It does not rely on the eventually consistent user GSI.
     After completion a minimal sub/status/expiry marker remains for 48 hours (asynchronous TTL).
     All protected API routes reject DELETING/DELETED subjects even with an unexpired ID Token.
-    The previous development image passed 53 live assertions on 2026-10-27.
-    The NICKNAME_REQUIRED response change is currently local and not yet deployed.
+    The development deployment passed 66 live verification checkpoints on 2026-10-28,
+    including shared-table session creation/deletion and NICKNAME_REQUIRED recovery.
+    TMDB/scoring, the recommendation-generation HTTP API, and FE screen integration
+    were not part of those checks. Synthetic recommendation results were seeded for deletion.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
 security:
   - CognitoIdToken: []
 paths:
+  /api/sessions:
+    post:
+      operationId: createSession
+      summary: Create a recommendation session using the verified user's sub
+      description: |
+        Integrates PR #9. Requires 2-6 participants, matching participantCount and unique
+        indexes covering 1..participantCount. Returns participants in index order and
+        removes duplicate genre codes within each participant. Session IDs are UUIDs,
+        as in the updated BE2 detailed specification. Recommendations start empty.
+        Initializes the app profile if needed; invalid initial nickname returns
+        NICKNAME_REQUIRED before saving. ACTIVE status is rechecked atomically in the
+        same transaction as the session write. Client userId never selects an owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSessionRequest' }
+      responses:
+        '201':
+          description: Session saved
+          headers:
+            Location:
+              description: Session path; GET on this path is a separate implementation task
+              schema: { type: string, example: /api/sessions/00000000-0000-4000-8000-000000000000 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400':
+          description: VALIDATION_ERROR for malformed JSON or field constraints; INVALID_REQUEST for session business rules. Both use the shared error envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/NicknameRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /api/users/me:
     get:
       operationId: getMyProfile
@@ -129,6 +166,66 @@ components:
       bearerFormat: JWT
       description: Cognito ID Token. Check RS256 signature, issuer, audience, token_use=id, nonblank sub, exp and nbf.
   schemas:
+    GenreCode:
+      type: string
+      enum: [ACTION, COMEDY, ROMANCE, DRAMA, SF, FANTASY, HORROR, CRIME, MYSTERY, ANIMATION]
+    CreateSessionRequest:
+      type: object
+      required: [participantCount, participants]
+      properties:
+        participantCount: { type: integer, minimum: 2, maximum: 6 }
+        participants:
+          type: array
+          minItems: 2
+          maxItems: 6
+          items:
+            type: object
+            required: [index, genres]
+            properties:
+              index: { type: integer, minimum: 1, maximum: 6 }
+              genres:
+                type: array
+                minItems: 1
+                description: Duplicate genre codes are removed according to the BE2 creation contract
+                items: { $ref: '#/components/schemas/GenreCode' }
+    Session:
+      type: object
+      additionalProperties: false
+      required: [sessionId, userId, participantCount, participants, recommendations, createdAt]
+      properties:
+        sessionId: { type: string, format: uuid }
+        userId: { type: string, description: Verified Cognito sub }
+        participantCount: { type: integer, minimum: 2, maximum: 6 }
+        participants:
+          type: array
+          minItems: 2
+          maxItems: 6
+          items:
+            type: object
+            additionalProperties: false
+            required: [index, genres]
+            properties:
+              index: { type: integer, minimum: 1, maximum: 6 }
+              genres:
+                type: array
+                minItems: 1
+                maxItems: 10
+                uniqueItems: true
+                items: { $ref: '#/components/schemas/GenreCode' }
+        recommendations:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [rank, tmdbId, mediaType]
+            properties:
+              rank: { type: integer, minimum: 1, maximum: 3 }
+              tmdbId: { type: integer, minimum: 1 }
+              mediaType: { type: string, enum: [movie, tv] }
+              title: { type: [string, 'null'] }
+              posterPath: { type: [string, 'null'] }
+              score: { type: [number, 'null'] }
+        createdAt: { type: string, format: date-time }
     Profile:
       type: object
       additionalProperties: false
@@ -147,9 +244,7 @@ components:
           minItems: 0
           maxItems: 10
           uniqueItems: true
-          items:
-            type: string
-            enum: [ACTION, COMEDY, ROMANCE, DRAMA, SF, FANTASY, HORROR, CRIME, MYSTERY, ANIMATION]
+          items: { $ref: '#/components/schemas/GenreCode' }
           examples: [[ACTION, SF], []]
     Error:
       type: object
@@ -211,8 +306,11 @@ x-dynamodb:
     idempotency: GET initialization is conditional; PATCH/PUT replace fields; DELETE resumes persisted state
   sessions:
     ownerIssue: '#3'
-    partitionKey: { name: userId, type: S }
-    sortKey: { name: sessionId, type: S }
+    partitionKey: { name: sessionId, type: S }
+    indexes:
+      - name: userId-createdAt-index
+        partitionKey: { name: userId, type: S }
+        sortKey: { name: createdAt, type: S }
     recommendations: Embedded in session items; deleting a session removes its results
-    erase: Query own partition consistently, paginate, BatchWriteItem in groups of 25, retry unprocessed items with bounded exponential backoff
-    integrationRequirement: New session writes must check user status ACTIVE atomically in the same DynamoDB transaction to prevent racing withdrawal. Ensure app profile exists before this transaction.
+    erase: After DELETING, strongly consistent base-table Scan filtered by userId; paginate every page and delete using sessionId-only keys in batches of 25; retry unprocessed items. Never use GSI emptiness as proof of completion.
+    integrationRequirement: Every session and recommendation write must check user status ACTIVE atomically in the same DynamoDB transaction. Recommendation updates must also require an existing owned session and empty previous results. Ensure the app profile exists before session creation.
