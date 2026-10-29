@@ -10,7 +10,7 @@
 
 POST /api/sessions와 OPTIONS를 기존 Lambda에 연결하고, 새 Deployment 스냅샷으로 dev Stage에 반영했습니다. IAM Policy Autopilot을 다시 실행해 ACTIVE 조건 트랜잭션과 Scan 삭제 권한을 실제 테이블에 한정해 적용했습니다. 두 스택 적용이 완료됐고 로컬 테스트 110개, 실제 AWS 검증 항목 66개를 통과했습니다. API·공유 테이블은 개발 연동에 사용하도록 유지하며 테스트 사용자·세션은 정리했습니다.
 
-현재 이미지 태그는 `src-f603fb4e2abe4ed6`, digest는 `sha256:6393e97c1e98590ae957dbd741fc679e633291caccbf92b096b58d948f04d6f1`입니다. CodeBuild 실행 `70379989-06c3-4836-a9a9-f4c3b31d5dc8`의 Docker 빌드·읽기 전용 컨테이너 인증/CORS 검사와 ECR basic scan(COMPLETE, 발견 항목 0개)을 확인했습니다. Git 커밋·푸시·PR 병합은 수행하지 않았습니다.
+현재 이미지 태그는 `src-f603fb4e2abe4ed6`, digest는 `sha256:6393e97c1e98590ae957dbd741fc679e633291caccbf92b096b58d948f04d6f1`입니다. CodeBuild 실행 `70379989-06c3-4836-a9a9-f4c3b31d5dc8`의 Docker 빌드·읽기 전용 컨테이너 인증/CORS 검사와 ECR basic scan(COMPLETE, 발견 항목 0개)을 확인했습니다. 이 배포 검증은 2026-10-28 기록입니다. 이후 main 통합 시에도 같은 빌드 소스·기반 이미지·배포 옵션을 유지하며, 소스 ZIP 해시와 실제 Lambda 이미지 digest를 대조합니다.
 
 ## 공통 실행 기준
 

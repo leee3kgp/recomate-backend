@@ -100,7 +100,7 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 
 개발용 AWS 검증 항목 66개를 통과했습니다. 실제 SRP 로그인·사용자별 데이터 분리·프로필과 장르 저장·POST 세션 생성·공유 테이블의 추천 결과 저장·탈퇴 시 본인 데이터 및 Cognito 삭제·기존 토큰 차단·반복 탈퇴·잘못된 초기 닉네임의 409 응답 및 PATCH 복구를 확인했습니다. 실제 DynamoDB 트랜잭션도 탈퇴 후 세션 재생성을 거절했습니다. 정상 검증의 임시 Cognito 사용자 3명과 세션은 정리됐고, 검증 스크립트의 캐시 헤더 검사 수정 전 첫 시도에서 만든 임시 사용자 3명도 정리했습니다. 최소 TTL 탈퇴 상태만 사용자 테이블에 48시간 유지합니다. 비밀번호·토큰은 프로세스 메모리에서만 사용했습니다. 추천 결과는 테스트용 값을 저장한 것이며 TMDB·추천 알고리즘·추천 생성 HTTP API를 검증한 것은 아닙니다.
 
-컨테이너 CI는 Compose v2.39.4를 명시하고 CodeBuild와 같은 401·CORS 검증 스크립트를 사용합니다. Compose 설정 검사와 actionlint 1.7.12 문법 검사는 기존 검증에서 통과했으며, 이번 미커밋 변경에 대한 GitHub Actions 전체 실행은 아직 확인하지 않았습니다. 실제 BE2 구조의 저장·탈퇴 통합은 위 검증에 포함되며 팀 코드 리뷰와 FE 브라우저 화면 연결은 별도입니다.
+컨테이너 CI는 Compose v2.39.4를 명시하고 CodeBuild와 같은 401·CORS 검증 스크립트를 사용합니다. Compose 설정 검사와 actionlint 1.7.12 문법 검사는 기존 검증에서 통과했으며, main 통합 변경의 GitHub Actions 전체 실행은 푸시 후 확인합니다. 실제 BE2 구조의 저장·탈퇴 통합은 위 검증에 포함되며 팀 코드 리뷰와 FE 브라우저 화면 연결은 별도입니다.
 
 개발용 API 기준 주소는 `https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev`이며, 예를 들어 프로필 경로는 이 주소 뒤에 `/api/users/me`를 붙입니다. 현재 사용 테이블은 `recomate-user-api-dev-users`, `RecommendationSession`입니다. 로컬에서 같은 테이블을 쓰려면 이 이름을 USERS_TABLE·SESSIONS_TABLE에 지정하고 별도의 개발자 인증을 연결합니다. 이전 `recomate-user-api-dev-validation-sessions`는 보존하지만 라이브 API는 사용하지 않습니다. Lambda 메모리는 기존 3008 MiB를 유지했습니다. 이번 배포 후 최초 세션 사전 요청은 약 12.7초, 재검증의 사전 요청은 약 0.3초였습니다. 이는 개별 측정이며 부하·동시 콜드 스타트 성능은 별도 검증 대상입니다.
 
