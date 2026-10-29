@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy user and genre APIs behind the existing REST API and Cognito authorizer, with isolated dev data and a digest-pinned Lambda image.
+Description: Deploy user, session and genre APIs behind the existing Cognito authorizer, using shared session storage and a digest-pinned Lambda image.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -8,8 +8,11 @@ Metadata:
       - at: docs/openapi.yaml
         has: API contract and DynamoDB item lifecycle
         scope: shared
-      - at: docs/container-deployment.md
-        has: Genre route integration and API deployment snapshot lifecycle
+      - at: docs/session-integration.md
+        has: Shared BE2 table and transaction-safe session and recommendation writes
+        scope: shared
+      - at: docs/genre-api.md
+        has: Shared genre catalog contract and authenticated route integration
         scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
@@ -50,16 +53,21 @@ Parameters:
     AllowedPattern: 'https?://[a-zA-Z0-9.-]+(:[0-9]{1,5})?'
   ExistingSessionsTableName:
     Type: String
-    Default: ''
-    Description: Use the real BE2 table when available; otherwise create an isolated dev validation table.
-    AllowedPattern: '(^$)|([a-zA-Z0-9_.-]{3,255})'
+    Default: RecommendationSession
+    Description: Shared BE2 table must exist with PK sessionId and the userId-createdAt-index GSI.
+    AllowedPattern: '[a-zA-Z0-9_.-]{3,255}'
+  PreserveLegacyValidationTable:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Keep the previously deployed validation table managed; live APIs never use it.
 Rules:
   ProjectRegion:
     Assertions:
       - Assert: !Equals [!Ref 'AWS::Region', ap-southeast-2]
         AssertDescription: All project resources must stay in the selected Region.
 Conditions:
-  CreateValidationSessionsTable: !Equals [!Ref ExistingSessionsTableName, '']
+  KeepLegacyValidationTable: !Equals [!Ref PreserveLegacyValidationTable, 'true']
 Resources:
   UsersTable:
     Type: AWS::DynamoDB::Table
@@ -79,13 +87,13 @@ Resources:
       TimeToLiveSpecification: {AttributeName: expiresAt, Enabled: true}
   ValidationSessionsTable:
     Type: AWS::DynamoDB::Table
-    Condition: CreateValidationSessionsTable
+    Condition: KeepLegacyValidationTable
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Metadata:
       com.aws.cloudformation.Context:
-        why: Validate withdrawal against the agreed session keys until BE2 supplies the shared table; this does not complete issue 3.
-        must: [Keep userId HASH and sessionId RANGE keys., Store only development validation data here.]
+        why: Preserve the old validation table and its stack ownership while live requests move to the shared BE2 table.
+        must: [Keep its legacy keys unchanged., Never route live session writes here., Retain persistent data on removal.]
     Properties:
       TableName: !Sub '${AWS::StackName}-validation-sessions'
       BillingMode: PAY_PER_REQUEST
@@ -107,7 +115,7 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Metadata:
       com.aws.cloudformation.Context:
-        why: Refined from IAM Policy Autopilot 0.3.0 output for the three Java SDK adapters; split user and session access and remove replication/customer-KMS permissions unused by these single-Region AWS-owned-key tables.
+        why: Refined from IAM Policy Autopilot 0.3.0 output for the user adapters and transactional session repository; scope concrete Put and Update actions and omit unused transaction Delete, replication and customer-KMS actions.
         must: [Regenerate the baseline when SDK operations change., Keep all data resources explicit rather than wildcard tables or user pools.]
     Properties:
       Description: Source-generated RecoMate user API permissions scoped to its tables and user pool
@@ -120,15 +128,12 @@ Resources:
             Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
           - Sid: OwnUserTable
             Effect: Allow
-            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem']
+            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:ConditionCheckItem']
             Resource: !GetAtt UsersTable.Arn
-          - Sid: EraseOwnedSessionPartition
+          - Sid: SharedSessionLifecycle
             Effect: Allow
-            Action: ['dynamodb:Query', 'dynamodb:BatchWriteItem']
-            Resource: !If
-              - CreateValidationSessionsTable
-              - !GetAtt ValidationSessionsTable.Arn
-              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingSessionsTableName}'
+            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem']
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingSessionsTableName}'
   ExecutionRole:
     Type: AWS::IAM::Role
     Metadata:
@@ -170,7 +175,7 @@ Resources:
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           COGNITO_CLIENT_ID: !Ref CognitoClientId
           USERS_TABLE: !Ref UsersTable
-          SESSIONS_TABLE: !If [CreateValidationSessionsTable, !Ref ValidationSessionsTable, !Ref ExistingSessionsTableName]
+          SESSIONS_TABLE: !Ref ExistingSessionsTableName
           CORS_ALLOWED_ORIGINS: !Ref AllowedOrigin
   ApiPrefix:
     Type: AWS::ApiGateway::Resource
@@ -217,6 +222,38 @@ Resources:
     Properties:
       RestApiId: !Ref RestApiId
       ResourceId: !Ref GenreCatalogResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: sessions}
+  SessionPost:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Connect the merged BE2 creation API to the existing authenticated Spring application.
+        must: [Keep the existing Cognito authorizer., Preserve the full API path.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionsResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionOptions:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionsResource
       HttpMethod: OPTIONS
       AuthorizationType: NONE
       Integration:
@@ -321,11 +358,23 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/users/me*'
+  SessionsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow only the configured API Stage's session creation and preflight path to invoke the existing function.
+        must: [Keep the source project and full path constrained.]
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/sessions'
   GenreCatalogInvokePermission:
     Type: AWS::Lambda::Permission
     Metadata:
       com.aws.cloudformation.Context:
-        why: Allow the catalog GET and preflight to reach the same function without widening user-route permissions.
+        why: Allow catalog GET and preflight without widening user or session route permissions.
         must: ['Restrict invocation to this project, API, Stage and catalog path.']
     Properties:
       FunctionName: !Ref ApiFunction
@@ -337,12 +386,12 @@ Resources:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Create a fresh route snapshot so the existing Stage actually publishes the added catalog methods.
-        must: [Wait for all application methods before creating the snapshot., Change this logical ID for subsequent routing changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, GenreCatalogGet, GenreCatalogOptions]
+        why: Publish a fresh snapshot containing genre GET and preflight alongside existing user and session methods.
+        must: [Wait for all methods., Change the logical ID for future route changes.]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate user and genre catalog API deployment
+      Description: RecoMate user, session and genre catalog deployment
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
@@ -361,6 +410,6 @@ Outputs:
     Description: Set this stage URL as the frontend API base
   UsersTableName: {Value: !Ref UsersTable, Description: User profile and deletion state table}
   SessionsTableName:
-    Value: !If [CreateValidationSessionsTable, !Ref ValidationSessionsTable, !Ref ExistingSessionsTableName]
-    Description: Shared BE2 table or isolated dev validation table
+    Value: !Ref ExistingSessionsTableName
+    Description: Shared BE2 sessionId table used by live API requests
   FunctionArn: {Value: !GetAtt ApiFunction.Arn, Description: Spring API function}

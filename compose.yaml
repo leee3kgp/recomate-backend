@@ -14,7 +14,7 @@ services:
       COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-ap-southeast-2_Cjugq3j3p}
       COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-7h7kjle5d1dh6ogea95thrk20q}
       USERS_TABLE: ${USERS_TABLE:-recomate-users-dev}
-      SESSIONS_TABLE: ${SESSIONS_TABLE:-recomate-sessions-dev}
+      SESSIONS_TABLE: ${SESSIONS_TABLE:-RecommendationSession}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     read_only: true
     tmpfs:

@@ -20,4 +20,10 @@ public class ApiException extends RuntimeException {
     public static ApiException nicknameRequired() {
         return new ApiException(409, "NICKNAME_REQUIRED", "닉네임을 1~20자로 다시 입력해주세요.");
     }
+    public static ApiException notFound() {
+        return new ApiException(404, "NOT_FOUND", "세션을 찾을 수 없습니다.");
+    }
+    public static ApiException recommendationExists() {
+        return new ApiException(409, "RECOMMENDATION_EXISTS", "이미 추천 결과가 있습니다.");
+    }
 }

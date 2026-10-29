@@ -1,6 +1,12 @@
 package com.recomate.user;
 
 import com.recomate.common.ApiException;
+import com.recomate.session.domain.Recommendation;
+import com.recomate.session.domain.RecommendationSession;
+import com.recomate.session.dto.CreateSessionRequest;
+import com.recomate.session.dto.ParticipantRequest;
+import com.recomate.session.repository.DynamoSessionRepository;
+import com.recomate.session.service.SessionService;
 import com.recomate.user.infrastructure.DynamoDbSessionDataEraser;
 import com.recomate.user.infrastructure.DynamoDbUserRepository;
 import java.net.URI;
@@ -11,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -48,10 +55,14 @@ class DynamoDbLocalTests {
                 .keySchema(KeySchemaElement.builder().attributeName("userId").keyType(KeyType.HASH).build())
                 .attributeDefinitions(AttributeDefinition.builder().attributeName("userId").attributeType(ScalarAttributeType.S).build()).build());
         db.createTable(CreateTableRequest.builder().tableName(sessionsTable).billingMode(BillingMode.PAY_PER_REQUEST)
-                .keySchema(KeySchemaElement.builder().attributeName("userId").keyType(KeyType.HASH).build(),
-                        KeySchemaElement.builder().attributeName("sessionId").keyType(KeyType.RANGE).build())
+                .keySchema(KeySchemaElement.builder().attributeName("sessionId").keyType(KeyType.HASH).build())
                 .attributeDefinitions(AttributeDefinition.builder().attributeName("userId").attributeType(ScalarAttributeType.S).build(),
-                        AttributeDefinition.builder().attributeName("sessionId").attributeType(ScalarAttributeType.S).build()).build());
+                        AttributeDefinition.builder().attributeName("sessionId").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("createdAt").attributeType(ScalarAttributeType.S).build())
+                .globalSecondaryIndexes(GlobalSecondaryIndex.builder().indexName("userId-createdAt-index")
+                        .keySchema(KeySchemaElement.builder().attributeName("userId").keyType(KeyType.HASH).build(),
+                                KeySchemaElement.builder().attributeName("createdAt").keyType(KeyType.RANGE).build())
+                        .projection(Projection.builder().projectionType(ProjectionType.ALL).build()).build()).build());
         users = new DynamoDbUserRepository(db, usersTable);
         sessions = new DynamoDbSessionDataEraser(db, sessionsTable);
     }
@@ -203,6 +214,119 @@ class DynamoDbLocalTests {
         verifyNoInteractions(directory);
     }
 
+    @Test
+    void actualSessionCreationAndRecommendationStorageAreCoveredByWithdrawal() {
+        String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        users.createIfAbsent(seed(other, "other"));
+        var directory = mock(IdentityDirectory.class);
+        var userService = new UserService(users, directory, sessions, Clock.systemUTC());
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var service = new SessionService(repository, userService, Clock.systemUTC());
+        var created = service.createSession(owner, new CreateSessionRequest(2,
+                List.of(new ParticipantRequest(1, List.of("ACTION")), new ParticipantRequest(2, List.of("SF")))));
+        assertThat(UUID.fromString(created.getSessionId()).toString()).isEqualTo(created.getSessionId());
+        assertThat(Instant.parse(created.getCreatedAt())).isNotNull();
+        assertThat(storedSession(created.getSessionId()).get("recommendations").l()).isEmpty();
+        assertThat(storedSession(created.getSessionId()).get("participants").l()).hasSize(2);
+        repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation()));
+        assertThat(storedSession(created.getSessionId()).get("recommendations").l()).hasSize(1);
+        putSession(other, UUID.randomUUID().toString());
+        userService.delete(owner);
+        assertThat(storedSession(created.getSessionId())).isEmpty();
+        assertThat(sessionCount(other)).isEqualTo(1);
+        verify(directory).delete(owner);
+        assertThat(users.find(owner).orElseThrow().status()).isEqualTo(UserRecord.Status.DELETED);
+    }
+
+    @Test
+    void transactionalWritesRejectWithdrawalAndCannotRecreateDeletedSessions() {
+        String owner = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var existing = session(owner);
+        repository.save(existing);
+        users.beginDeletion(owner);
+        assertThatThrownBy(() -> repository.save(session(owner))).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.status()).isEqualTo(401));
+        assertThatThrownBy(() -> repository.saveRecommendations(owner, existing.getSessionId(), List.of(recommendation())))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(401));
+        sessions.deleteAll(owner);
+        assertThatThrownBy(() -> repository.saveRecommendations(owner, existing.getSessionId(), List.of(recommendation())))
+                .isInstanceOf(ApiException.class);
+        assertThat(storedSession(existing.getSessionId())).isEmpty();
+        assertThat(sessionCount(owner)).isZero();
+    }
+
+    @Test
+    void resultWritesCannotTargetAnotherUsersSessionOrOverwriteExistingResults() {
+        String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        users.createIfAbsent(seed(other, "other"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var created = session(owner);
+        repository.save(created);
+        assertThatThrownBy(() -> repository.saveRecommendations(other, created.getSessionId(), List.of(recommendation())))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(404));
+        assertThatThrownBy(() -> repository.saveRecommendations(owner, "missing-session", List.of(recommendation())))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(404));
+        repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation()));
+        assertThatThrownBy(() -> repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation())))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.code()).isEqualTo("RECOMMENDATION_EXISTS"));
+        assertThat(sessionCount(other)).isZero();
+    }
+
+    @Test
+    void concurrentSessionCreationAndWithdrawalLeaveNoOwnerData() throws Exception {
+        for (int run = 0; run < 3; run++) {
+            String owner = UUID.randomUUID().toString();
+            users.createIfAbsent(seed(owner, "owner"));
+            var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+            var directory = mock(IdentityDirectory.class);
+            var service = new UserService(users, directory, sessions, Clock.systemUTC());
+            var start = new CountDownLatch(1);
+            try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                var creation = executor.submit(() -> {
+                    start.await();
+                    for (int index = 0; index < 12; index++) {
+                        try { repository.save(session(owner)); }
+                        catch (ApiException withdrawn) { assertThat(withdrawn.status()).isEqualTo(401); }
+                        catch (TransactionCanceledException conflict) {
+                            assertThat(conflict.cancellationReasons()).anySatisfy(reason ->
+                                    assertThat(reason.code()).isEqualTo("TransactionConflict"));
+                        }
+                    }
+                    return null;
+                });
+                var deletion = executor.submit(() -> { start.await(); service.delete(owner); return null; });
+                start.countDown();
+                creation.get(); deletion.get();
+            }
+            assertThat(sessionCount(owner)).isZero();
+            assertThat(users.find(owner).orElseThrow().status()).isEqualTo(UserRecord.Status.DELETED);
+        }
+    }
+
+    private RecommendationSession session(String owner) {
+        var value = new RecommendationSession();
+        value.setSessionId(UUID.randomUUID().toString());
+        value.setUserId(owner);
+        value.setParticipantCount(2);
+        value.setCreatedAt(Instant.now().toString());
+        return value;
+    }
+
+    private Recommendation recommendation() {
+        var value = new Recommendation();
+        value.setRank(1); value.setTmdbId(603L); value.setMediaType("movie");
+        return value;
+    }
+
+    private Map<String, AttributeValue> storedSession(String sessionId) {
+        return db.getItem(GetItemRequest.builder().tableName(sessionsTable).consistentRead(true)
+                .key(Map.of("sessionId", AttributeValue.builder().s(sessionId).build())).build()).item();
+    }
+
     private void putSession(String id, String sessionId) {
         db.putItem(PutItemRequest.builder().tableName(sessionsTable).item(Map.of(
                 "userId", AttributeValue.builder().s(id).build(), "sessionId", AttributeValue.builder().s(sessionId).build(),
@@ -210,7 +334,7 @@ class DynamoDbLocalTests {
     }
 
     private int sessionCount(String id) {
-        return db.query(QueryRequest.builder().tableName(sessionsTable).keyConditionExpression("userId = :id")
+        return db.scan(ScanRequest.builder().tableName(sessionsTable).consistentRead(true).filterExpression("userId = :id")
                 .expressionAttributeValues(Map.of(":id", AttributeValue.builder().s(id).build())).select(Select.COUNT).build()).count();
     }
 }

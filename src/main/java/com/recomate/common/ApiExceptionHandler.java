@@ -20,6 +20,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .body(ApiError.of(exception.code(), exception.getMessage()));
     }
 
+    @ExceptionHandler(InvalidRequestException.class)
+    ResponseEntity<ApiError> invalidSessionRequest(InvalidRequestException exception) {
+        return ResponseEntity.badRequest().body(ApiError.of("INVALID_REQUEST", exception.getMessage()));
+    }
+
     @Override
     protected ResponseEntity<Object> handleExceptionInternal(Exception exception, Object body,
             HttpHeaders headers, HttpStatusCode status, WebRequest request) {

@@ -9,7 +9,7 @@
     "windowsX64Url": "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.1/cfn-guard-v3-x86_64-windows-latest.tar.gz",
     "sha256": "52af28c02081f1067c6710c08619d359899734ec59d51f17f68e1b4b396a1203"
   },
-  "templates": ["infra/build.yaml", "infra/user-api.yaml"],
+  "templates": ["infra/build.yaml", "infra/user-api.yaml", "infra/sessions.yaml"],
   "guardRules": {
     "repository": "https://github.com/aws-cloudformation/aws-guard-rules-registry",
     "commit": "7f7340c26ae5d5e8874651dbffeb12e0e9f505b6",

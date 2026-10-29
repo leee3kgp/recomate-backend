@@ -62,10 +62,16 @@ Authorization: Bearer <Cognito ID Token>
 
 `infra/user-api.yaml`에 기존 사용자 API와 같은 Lambda로 연결되는 장르 GET·OPTIONS, Cognito Authorizer, 경로를 제한한 호출 권한을 추가했습니다. 새 경로를 Stage에 반영하도록 API Deployment 스냅샷도 갱신합니다. 실제 배포 순서는 [컨테이너 배포](container-deployment.md)를 따릅니다.
 
-프론트는 `genres.js`의 고정 목록 대신 인증된 요청으로 받은 `genres`를 사용하도록 별도 연결해야 합니다. 백엔드 구현 완료가 FE 연결·AWS 배포 완료를 의미하지 않습니다. 실제 BE2 RecommendationSession 연결 대기 상태도 유지합니다.
+프론트는 `genres.js`의 고정 목록 대신 인증된 요청으로 받은 `genres`를 사용하도록 별도 연결해야 합니다. 백엔드 구현 완료가 FE 연결·AWS 배포 완료를 의미하지 않습니다. 사용자 API와 공유 RecommendationSession 연결은 최신 main에서 반영했으며 세션 생성·추천 저장의 ACTIVE 조건 트랜잭션도 유지합니다.
+
+장르 배포 템플릿은 사용자·세션·장르 메서드 전체를 포함하는 ApiDeploymentGenreCatalogV1 스냅샷으로 기존 dev Stage를 갱신합니다. 현재 배포된 #6 이미지와 이 장르 추가 버전의 빌드 소스는 다르므로, 새 이미지를 빌드·검증한 뒤 배포해야 합니다.
 
 ## 검증 결과
 
 2026-10-28에 임시 DynamoDB Local을 포함한 전체 테스트 92개(실패·건너뜀 0개)와 실행 JAR 빌드를 통과했습니다. 장르 목록의 정확한 코드·표시명·순서, 프로필 없는 사용자 조회, 개인 선호 장르와의 독립성, JWT 정상·오류 요청, 탈퇴 상태 차단, CORS 사전 요청과 사용자 API의 전체 장르 저장을 검증합니다. 기존 사용자 API·저장소·탈퇴 복구 테스트도 함께 실행했습니다.
 
 OpenAPI 응답 스키마·예시와 API 테스트의 기대 응답을 대조했고, 수정한 CloudFormation 템플릿의 cfn-lint 오류·경고 0개와 기존 선택 Guard 규칙 6개 통과를 확인했습니다. 컨테이너 검사 스크립트에는 새 경로를 추가하고 Bash 문법을 검사했습니다. 현재 PC에 Docker가 없어 실제 컨테이너 재빌드는 하지 않았으며, 실제 AWS 배포·FE 연결 검증도 남아 있습니다.
+
+2026-10-29 최신 main(`c2604ae`)의 사용자·세션 연동과 CI 구성을 장르 코드에 반영하고 충돌을 정리했습니다. 실제 작업 트리에서 DynamoDB Local을 포함해 테스트 119개(실패·오류·건너뜀 0개)와 bootJar를 통과했습니다. OpenAPI 참조 37개, 장르 예시 10개, 배포 스냅샷의 메서드 11개를 확인했고, 사용자·세션·데이터 권한 리소스가 main과 동일하게 유지되는 것도 대조했습니다.
+
+CloudFormation 3개 템플릿의 cfn-lint, 선택한 Guard 규칙, Compose 설정, 워크플로 문법과 Bash 문법 검사도 통과했습니다. 새 빌드 소스 해시는 `d955fea7152f7939ef307f5b8cdebb8a84551e0d8564a373a0a41bbc6887dd0b`입니다. 이 결과는 로컬 통합 검증이며 새 이미지 빌드·AWS 변경 계획 검사·배포·실제 호출 결과는 아닙니다. 병합 확정 커밋·푸시·PR 생성도 아직 수행하지 않았습니다.

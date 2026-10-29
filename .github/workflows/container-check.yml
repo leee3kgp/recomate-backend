@@ -67,6 +67,7 @@ jobs:
         run: >-
           docker buildx build --platform linux/amd64
           --provenance=false --sbom=false --load
+          --target runtime-ci
           --tag recomate-backend:ci .
 
       - name: Verify startup with a read-only filesystem
