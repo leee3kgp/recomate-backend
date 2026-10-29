@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Build the existing Dockerfile in CodeBuild and publish an immutable image; no developer Docker daemon or credentials in images.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    ref:
+      - at: docs/container-deployment.md
+        has: Container architecture and deployment constraints
+        scope: shared
+Parameters:
+  LambdaFunctionName:
+    Type: String
+    Default: recomate-user-api-dev
+    AllowedPattern: '[a-zA-Z0-9-_]{1,64}'
+  SourceKey:
+    Type: String
+    Default: source/source.zip
+    AllowedPattern: 'source/[a-zA-Z0-9._-]+\.zip'
+Rules:
+  ProjectRegion:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::Region', ap-southeast-2]
+        AssertDescription: All project resources must stay in the selected Region.
+Resources:
+  LogKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Encrypt build and application log groups with one project key.
+        must: [Retain while either log group still uses the key.]
+    Properties:
+      Description: RecoMate development build and API log encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ProjectAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: EncryptOnlyProjectLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey']
+            Resource: '*'
+            Condition:
+              ArnEquals:
+                'kms:EncryptionContext:aws:logs:arn':
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${LambdaFunctionName}'
+  BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${AWS::StackName}'
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt LogKey.Arn
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Receive an allowlisted local source snapshot without publishing uncommitted code to GitHub.
+        must: [Never upload credentials or personal application-local settings., Keep public access blocked.]
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      VersioningConfiguration: {Status: Enabled}
+      OwnershipControls:
+        Rules: [{ObjectOwnership: BucketOwnerEnforced}]
+      LifecycleConfiguration:
+        Rules:
+          - Id: RemoveOldSourceSnapshots
+            Status: Enabled
+            Prefix: source/
+            ExpirationInDays: 7
+            NoncurrentVersionExpiration: {NoncurrentDays: 7}
+            AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}
+  SourceBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SourceBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RequireTls
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt SourceBucket.Arn, !Sub '${SourceBucket.Arn}/*']
+            Condition: {Bool: {'aws:SecureTransport': false}}
+  Repository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Publish a single-platform tested container; immutable tags and digest deployment prevent image replacement.
+        must: [Retain deployed image digests., Restrict Lambda image retrieval to the intended function.]
+    Properties:
+      RepositoryName: !Sub '${AWS::StackName}-api'
+      ImageTagMutability: IMMUTABLE
+      EncryptionConfiguration: {EncryptionType: AES256}
+      ImageScanningConfiguration: {ScanOnPush: true}
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: LambdaImageRetrieval
+            Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: ['ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer']
+            Condition:
+              StringEquals: {'aws:SourceAccount': !Ref 'AWS::AccountId'}
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+  BuildRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Give the isolated build access only to its source object, build logs, and image repository.
+        must: [Do not attach administrator or application data permissions., Keep CodeBuild trust scoped to this project.]
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codebuild.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {'aws:SourceAccount': !Ref 'AWS::AccountId'}
+              ArnEquals:
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${AWS::StackName}'
+      Policies:
+        - PolicyName: SourceAndImageBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:GetObject', 's3:GetObjectVersion']
+                Resource: !Sub '${SourceBucket.Arn}/source/*'
+              - Effect: Allow
+                Action: ['s3:GetBucketAcl', 's3:GetBucketLocation']
+                Resource: !GetAtt SourceBucket.Arn
+              - Effect: Allow
+                Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
+                Resource: !GetAtt BuildLogGroup.Arn
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage', 'ecr:InitiateLayerUpload', 'ecr:UploadLayerPart', 'ecr:CompleteLayerUpload', 'ecr:PutImage', 'ecr:DescribeImages']
+                Resource: !GetAtt Repository.Arn
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref 'AWS::StackName'
+      ServiceRole: !GetAtt BuildRole.Arn
+      Source:
+        Type: S3
+        Location: !Sub '${SourceBucket}/${SourceKey}'
+        BuildSpec: buildspec.yml
+      Artifacts: {Type: NO_ARTIFACTS}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - {Name: ECR_REPOSITORY_URI, Value: !GetAtt Repository.RepositoryUri}
+          - {Name: IMAGE_TAG, Value: require-content-hash-override}
+          - {Name: SOURCE_SHA256, Value: require-content-hash-override}
+      TimeoutInMinutes: 20
+      QueuedTimeoutInMinutes: 10
+      ConcurrentBuildLimit: 1
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+Outputs:
+  SourceBucketName: {Value: !Ref SourceBucket, Description: Private source snapshot upload bucket}
+  BuildProjectName: {Value: !Ref BuildProject, Description: CodeBuild image build project}
+  RepositoryUri: {Value: !GetAtt Repository.RepositoryUri, Description: Immutable image repository}
+  LogKeyArn: {Value: !GetAtt LogKey.Arn, Description: Log encryption key shared with the API stack}

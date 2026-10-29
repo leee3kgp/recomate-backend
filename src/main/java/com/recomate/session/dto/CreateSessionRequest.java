@@ -9,5 +9,5 @@ import java.util.List;
 
 public record CreateSessionRequest(
         @NotNull @Min(2) @Max(6) Integer participantCount,
-        @NotNull @Size(min = 2, max = 6) @Valid List<ParticipantRequest> participants) {
+        @NotNull @Size(min = 2, max = 6) @Valid List<@NotNull ParticipantRequest> participants) {
 }

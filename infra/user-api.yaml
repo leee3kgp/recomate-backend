@@ -1,0 +1,360 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy user and session APIs behind the existing Cognito authorizer, using shared session storage and a digest-pinned Lambda image.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    ref:
+      - at: docs/openapi.yaml
+        has: API contract and DynamoDB item lifecycle
+        scope: shared
+      - at: docs/session-integration.md
+        has: Shared BE2 table and transaction-safe session and recommendation writes
+        scope: shared
+    must:
+      - Keep the existing JWT test stage and Cognito client unchanged.
+      - Generate the runtime policy baseline from source and scope it to these resources.
+Parameters:
+  RestApiId:
+    Type: String
+    AllowedPattern: '[a-z0-9]+'
+  RootResourceId:
+    Type: String
+    AllowedPattern: '[a-z0-9]+'
+  CognitoAuthorizerId:
+    Type: String
+    AllowedPattern: '[a-z0-9]+'
+  CognitoUserPoolId:
+    Type: String
+    AllowedPattern: 'ap-southeast-2_[a-zA-Z0-9]+'
+  CognitoClientId:
+    Type: String
+    AllowedPattern: '[a-z0-9]+'
+  ImageUri:
+    Type: String
+    AllowedPattern: '[0-9]{12}\.dkr\.ecr\.ap-southeast-2\.amazonaws\.com/[a-z0-9._/-]+@sha256:[a-f0-9]{64}'
+  LogKeyArn:
+    Type: String
+    AllowedPattern: 'arn:aws:kms:ap-southeast-2:[0-9]{12}:key/[a-f0-9-]+'
+  FunctionName:
+    Type: String
+    Default: recomate-user-api-dev
+    AllowedPattern: '[a-zA-Z0-9-_]{1,64}'
+  StageName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-zA-Z0-9_-]+'
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:5173
+    AllowedPattern: 'https?://[a-zA-Z0-9.-]+(:[0-9]{1,5})?'
+  ExistingSessionsTableName:
+    Type: String
+    Default: RecommendationSession
+    Description: Shared BE2 table must exist with PK sessionId and the userId-createdAt-index GSI.
+    AllowedPattern: '[a-zA-Z0-9_.-]{3,255}'
+  PreserveLegacyValidationTable:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Keep the previously deployed validation table managed; live APIs never use it.
+Rules:
+  ProjectRegion:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::Region', ap-southeast-2]
+        AssertDescription: All project resources must stay in the selected Region.
+Conditions:
+  KeepLegacyValidationTable: !Equals [!Ref PreserveLegacyValidationTable, 'true']
+Resources:
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Isolate user profile and deletion state from the BE2-owned session schema.
+        must: [Keep userId as the verified Cognito sub., Set TTL only on completed deletion markers., Retain persistent data on stack removal.]
+    Properties:
+      TableName: !Sub '${AWS::StackName}-users'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: userId, AttributeType: S}]
+      KeySchema: [{AttributeName: userId, KeyType: HASH}]
+      DeletionProtectionEnabled: true
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      TimeToLiveSpecification: {AttributeName: expiresAt, Enabled: true}
+  ValidationSessionsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: KeepLegacyValidationTable
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Preserve the old validation table and its stack ownership while live requests move to the shared BE2 table.
+        must: [Keep its legacy keys unchanged., Never route live session writes here., Retain persistent data on removal.]
+    Properties:
+      TableName: !Sub '${AWS::StackName}-validation-sessions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: userId, AttributeType: S}
+        - {AttributeName: sessionId, AttributeType: S}
+      KeySchema:
+        - {AttributeName: userId, KeyType: HASH}
+        - {AttributeName: sessionId, KeyType: RANGE}
+      DeletionProtectionEnabled: true
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FunctionName}'
+      RetentionInDays: 7
+      KmsKeyId: !Ref LogKeyArn
+  RuntimeDataPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Refined from IAM Policy Autopilot 0.3.0 output for the user adapters and transactional session repository; scope concrete Put and Update actions and omit unused transaction Delete, replication and customer-KMS actions.
+        must: [Regenerate the baseline when SDK operations change., Keep all data resources explicit rather than wildcard tables or user pools.]
+    Properties:
+      Description: Source-generated RecoMate user API permissions scoped to its tables and user pool
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CognitoUserLifecycle
+            Effect: Allow
+            Action: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminDeleteUser']
+            Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+          - Sid: OwnUserTable
+            Effect: Allow
+            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:ConditionCheckItem']
+            Resource: !GetAtt UsersTable.Arn
+          - Sid: SharedSessionLifecycle
+            Effect: Allow
+            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem']
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingSessionsTableName}'
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Separate application data access from the build role; attach only the reviewed source-generated runtime policy and scoped logging.
+        must: [Do not attach human access or administrator policies., Keep runtime data scope aligned with the actual stack tables and Cognito pool.]
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [!Ref RuntimeDataPolicy]
+      Policies:
+        - PolicyName: WriteOwnLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
+                Resource: !GetAtt ApiLogGroup.Arn
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Run the tested Spring container through Lambda Web Adapter; allocate extra CPU through memory to keep cold startup clear of the REST API timeout.
+        must: [Use a single linux amd64 image pinned by digest., Keep the function behind Cognito-protected API Gateway methods., Never configure a personal AWS profile or credentials.]
+    Properties:
+      FunctionName: !Ref FunctionName
+      PackageType: Image
+      Code: {ImageUri: !Ref ImageUri}
+      Architectures: [x86_64]
+      Role: !GetAtt ExecutionRole.Arn
+      MemorySize: 3008
+      Timeout: 28
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoClientId
+          USERS_TABLE: !Ref UsersTable
+          SESSIONS_TABLE: !Ref ExistingSessionsTableName
+          CORS_ALLOWED_ORIGINS: !Ref AllowedOrigin
+  ApiPrefix:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref RootResourceId, PathPart: api}
+  UsersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: users}
+  MeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref UsersResource, PathPart: me}
+  GenresResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref MeResource, PathPart: genres}
+  SessionsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: sessions}
+  SessionPost:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Connect the merged BE2 creation API to the existing authenticated Spring application.
+        must: [Keep the existing Cognito authorizer., Preserve the full API path.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionsResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionOptions:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  ProfileGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref MeResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  ProfilePatch:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref MeResource
+      HttpMethod: PATCH
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  ProfileDelete:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref MeResource
+      HttpMethod: DELETE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  GenresGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GenresResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  GenresPut:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GenresResource
+      HttpMethod: PUT
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  ProfileOptions:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref MeResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  GenresOptions:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GenresResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/users/me*'
+  SessionsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow only the configured API Stage's session creation and preflight path to invoke the existing function.
+        must: [Keep the source project and full path constrained.]
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/sessions'
+  ApiDeploymentSessionIntegrationV1:
+    Type: AWS::ApiGateway::Deployment
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Publish a fresh snapshot containing session POST and preflight alongside existing user methods.
+        must: [Wait for all methods., Change the logical ID for future route changes.]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions]
+    Properties:
+      RestApiId: !Ref RestApiId
+      Description: RecoMate user and session integration deployment
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RestApiId
+      DeploymentId: !Ref ApiDeploymentSessionIntegrationV1
+      StageName: !Ref StageName
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
+          DataTraceEnabled: false
+Outputs:
+  ApiBaseUrl:
+    Value: !Sub 'https://${RestApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}'
+    Description: Set this stage URL as the frontend API base
+  UsersTableName: {Value: !Ref UsersTable, Description: User profile and deletion state table}
+  SessionsTableName:
+    Value: !Ref ExistingSessionsTableName
+    Description: Shared BE2 sessionId table used by live API requests
+  FunctionArn: {Value: !GetAtt ApiFunction.Arn, Description: Spring API function}

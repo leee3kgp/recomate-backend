@@ -1,0 +1,74 @@
+name: Container check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dynamodb-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Start checksum-pinned DynamoDB Local
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            https://d1ni2b6xgvw0s0.cloudfront.net/v2.x/dynamodb_local_latest.zip \
+            --output "$RUNNER_TEMP/dynamodb-local.zip"
+          echo "667cde09f96f4785cede4d107d8066011e5eeceb5dd4566ea8c74c0d378fe919  $RUNNER_TEMP/dynamodb-local.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/dynamodb-local.zip" -d "$RUNNER_TEMP/dynamodb-local"
+          java "-Djava.library.path=$RUNNER_TEMP/dynamodb-local/DynamoDBLocal_lib" \
+            -jar "$RUNNER_TEMP/dynamodb-local/DynamoDBLocal.jar" -inMemory -sharedDb -disableTelemetry -port 18000 \
+            > "$RUNNER_TEMP/dynamodb-local.log" 2>&1 &
+          ready=false
+          for attempt in {1..30}; do
+            if curl --silent http://127.0.0.1:18000 > /dev/null; then ready=true; break; fi
+            sleep 1
+          done
+          test "$ready" = true
+      - name: Verify actual storage and withdrawal recovery
+        env:
+          DYNAMODB_LOCAL_ENDPOINT: http://127.0.0.1:18000
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon test --tests com.recomate.user.DynamoDbLocalTests
+      - name: Local database diagnostics
+        if: failure()
+        run: cat "$RUNNER_TEMP/dynamodb-local.log"
+
+  build-and-start:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up the required Compose version
+        uses: docker/setup-compose-action@v1
+        with:
+          version: v2.39.4
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build image and run Gradle tests
+        run: >-
+          docker buildx build --platform linux/amd64
+          --provenance=false --sbom=false --load
+          --target runtime-ci
+          --tag recomate-backend:ci .
+
+      - name: Verify startup with a read-only filesystem
+        run: bash scripts/container-smoke.sh recomate-backend:ci

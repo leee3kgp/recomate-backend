@@ -9,11 +9,14 @@ import com.recomate.session.dto.ParticipantRequest;
 import com.recomate.session.service.SessionService;
 import java.util.ArrayList;
 import java.util.List;
+import java.time.Clock;
+import com.recomate.user.UserService;
+import static org.mockito.Mockito.mock;
 import org.junit.jupiter.api.Test;
 
 class SessionServiceTest {
     private final List<RecommendationSession> saved = new ArrayList<>();
-    private final SessionService service = new SessionService(saved::add);
+    private final SessionService service = new SessionService(saved::add, mock(UserService.class), Clock.systemUTC());
 
     private static ParticipantRequest p(int i, String... genres) {
         return new ParticipantRequest(i, List.of(genres));

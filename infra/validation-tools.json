@@ -1,0 +1,27 @@
+{
+  "installRoot": ".gradle/deployment-tools",
+  "pythonPackages": {
+    "cfn-lint": "1.58.0",
+    "iam-policy-autopilot": "0.3.0"
+  },
+  "guard": {
+    "version": "3.2.1",
+    "windowsX64Url": "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.1/cfn-guard-v3-x86_64-windows-latest.tar.gz",
+    "sha256": "52af28c02081f1067c6710c08619d359899734ec59d51f17f68e1b4b396a1203"
+  },
+  "templates": ["infra/build.yaml", "infra/user-api.yaml", "infra/sessions.yaml"],
+  "guardRules": {
+    "repository": "https://github.com/aws-cloudformation/aws-guard-rules-registry",
+    "commit": "7f7340c26ae5d5e8874651dbffeb12e0e9f505b6",
+    "selected": [
+      "rules/aws/amazon_s3/s3_bucket_level_public_access_prohibited.guard",
+      "rules/aws/amazon_s3/s3_bucket_ssl_requests_only.guard",
+      "rules/aws/amazon_s3/s3_bucket_server_side_encryption_enabled.guard",
+      "rules/aws/amazon_s3/s3_bucket_versioning_enabled.guard",
+      "rules/aws/dynamodb/dynamodb_pitr_enabled.guard",
+      "rules/aws/lambda/lambda_function_public_access_prohibited.guard"
+    ],
+    "encryptionNote": "DynamoDB uses always-on AWS-owned-key encryption; rules requiring an explicit managed/customer KMS table key are not applicable to this choice."
+  },
+  "region": "ap-southeast-2"
+}

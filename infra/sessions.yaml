@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Shared RecommendationSession storage for the BE2 sessionId schema, retained independently of application deployments.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    ref:
+      - at: docs/session-integration.md
+        has: PR 9 schema and withdrawal-safe shared persistence contract
+        scope: shared
+Parameters:
+  SessionsTableName:
+    Type: String
+    Default: RecommendationSession
+    AllowedPattern: '[a-zA-Z0-9_.-]{3,255}'
+Rules:
+  ProjectRegion:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::Region', ap-southeast-2]
+        AssertDescription: All project resources must stay in the selected Region.
+Resources:
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Keep the merged BE2 model unchanged while giving both APIs one durable shared table.
+        must: [Keep sessionId as the only base-table key., Retain data on stack removal or replacement., Keep the user-createdAt GSI for list queries.]
+    Properties:
+      TableName: !Ref SessionsTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: sessionId, AttributeType: S}
+        - {AttributeName: userId, AttributeType: S}
+        - {AttributeName: createdAt, AttributeType: S}
+      KeySchema:
+        - {AttributeName: sessionId, KeyType: HASH}
+      GlobalSecondaryIndexes:
+        - IndexName: userId-createdAt-index
+          KeySchema:
+            - {AttributeName: userId, KeyType: HASH}
+            - {AttributeName: createdAt, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+      DeletionProtectionEnabled: true
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+Outputs:
+  SessionsTableName:
+    Value: !Ref SessionsTable
+    Description: Set ExistingSessionsTableName and SESSIONS_TABLE to this value
+  SessionsTableArn:
+    Value: !GetAtt SessionsTable.Arn
+    Description: Shared session table for scoped application runtime access

@@ -13,26 +13,40 @@ java {
 	}
 }
 
-dependencyManagement {
-	imports {
-		mavenBom 'software.amazon.awssdk:bom:2.29.52'
-	}
-}
-
 repositories {
 	mavenCentral()
 }
 
 dependencies {
+	implementation platform('software.amazon.awssdk:bom:2.57.3')
+	implementation 'software.amazon.awssdk:dynamodb'
+	implementation 'software.amazon.awssdk:dynamodb-enhanced'
+	implementation 'software.amazon.awssdk:cognitoidentityprovider'
+	runtimeOnly 'software.amazon.awssdk:signin'
 	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'org.springframework.boot:spring-boot-starter-security-oauth2-resource-server'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
-	implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
-    implementation 'software.amazon.awssdk:dynamodb-enhanced'
 	testImplementation 'org.springframework.boot:spring-boot-starter-security-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-security-oauth2-resource-server-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-validation-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release = 21
+}
+
+tasks.named('bootJar') {
+	archiveFileName = 'recomate.jar'
+}
+
+tasks.named('bootRun') {
+	javaLauncher = javaToolchains.launcherFor(java.toolchain)
+	environment 'AWS_PROFILE', providers.environmentVariable('AWS_PROFILE').orElse('recomate').get()
+	environment 'AWS_REGION', 'ap-southeast-2'
 }
 
 tasks.named('test') {

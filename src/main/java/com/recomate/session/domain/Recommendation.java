@@ -7,7 +7,7 @@ import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbBean;
 public class Recommendation {
     private Integer rank;
     private Long tmdbId;
-    private String mediaType; // MOVIE | TV
+    private String mediaType; // movie | tv (RecoMate API contract)
     private String title;
     private String posterPath;
     private Double score;
