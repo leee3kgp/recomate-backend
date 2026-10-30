@@ -1,6 +1,8 @@
 package com.recomate.genre;
 
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /** RecoMate genre master v1, in the display order agreed with the frontend. */
 public enum Genre {
@@ -16,6 +18,7 @@ public enum Genre {
     ANIMATION("애니메이션");
 
     private static final List<Genre> ALL = List.of(values());
+    private static final Set<String> CODES = ALL.stream().map(Genre::name).collect(Collectors.toUnmodifiableSet());
     private final String displayName;
 
     Genre(String displayName) { this.displayName = displayName; }
@@ -25,6 +28,6 @@ public enum Genre {
     public static List<Genre> all() { return ALL; }
 
     public static boolean isValidCode(String code) {
-        return ALL.stream().anyMatch(genre -> genre.name().equals(code));
+        return code != null && CODES.contains(code);
     }
 }

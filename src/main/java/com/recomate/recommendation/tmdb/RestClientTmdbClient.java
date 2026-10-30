@@ -5,11 +5,14 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.recomate.common.ApiException;
 import com.recomate.genre.Genre;
 import com.recomate.recommendation.ContentType;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -21,7 +24,10 @@ public class RestClientTmdbClient implements TmdbClient {
     public RestClientTmdbClient(
         @Value("${recomate.tmdb.base-url:https://api.themoviedb.org/3}") String baseUrl,
         @Value("${recomate.tmdb.access-token:}") String accessToken) {
-        this.http = RestClient.builder().baseUrl(baseUrl)
+        // Two sequential lookups must fail as 502 before the 28-second Lambda timeout.
+        var requests = new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build());
+        requests.setReadTimeout(Duration.ofSeconds(8));
+        this.http = RestClient.builder().baseUrl(baseUrl).requestFactory(requests)
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken).build();
     }
 
@@ -44,7 +50,7 @@ public class RestClientTmdbClient implements TmdbClient {
             if (body == null || body.results() == null) return List.of();
             return body.results().stream().map(item -> toContent(type, item)).toList();
         } catch (RestClientException e) {
-            throw ApiException.upstream(); // 아래 5번 참고
+            throw ApiException.upstream();
         }
     }
 

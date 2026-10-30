@@ -1,11 +1,15 @@
 package com.recomate.session.repository;
 
 import com.recomate.common.ApiException;
+import com.recomate.genre.Genre;
 import com.recomate.session.domain.Recommendation;
 import com.recomate.session.domain.RecommendationSession;
+import com.recomate.session.domain.SessionAnalysis;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
@@ -17,6 +21,7 @@ import software.amazon.awssdk.services.dynamodb.model.*;
 @Repository
 public class DynamoSessionRepository implements SessionRepository, RecommendationRepository {
     private static final TableSchema<RecommendationSession> SCHEMA = TableSchema.fromBean(RecommendationSession.class);
+    private static final int MAX_PARTICIPANTS = 6;
     private final DynamoDbClient db;
     private final String sessionsTable;
     private final String usersTable;
@@ -43,17 +48,66 @@ public class DynamoSessionRepository implements SessionRepository, Recommendatio
     }
 
     @Override
-    public void saveRecommendations(String userId, String sessionId, List<Recommendation> recommendations) {
+    public Optional<RecommendationSession> findById(String sessionId) {
+        var item = db.getItem(GetItemRequest.builder().tableName(sessionsTable)
+                .key(key(sessionId)).consistentRead(true).build()).item();
+        return item.isEmpty() ? Optional.empty() : Optional.of(SCHEMA.mapToItem(item));
+    }
+
+    @Override
+    public Page findByUser(String userId, int limit, Cursor cursor) {
+        var query = QueryRequest.builder().tableName(sessionsTable).indexName(RecommendationSession.USER_INDEX)
+                .keyConditionExpression("#owner = :owner")
+                .expressionAttributeNames(Map.of("#owner", "userId", "#id", "sessionId", "#count", "participantCount", "#created", "createdAt"))
+                .expressionAttributeValues(Map.of(":owner", text(userId)))
+                .projectionExpression("#id, #count, #created").scanIndexForward(false).limit(limit);
+        if (cursor != null) {
+            query.exclusiveStartKey(Map.of("userId", text(userId), "sessionId", text(cursor.sessionId()),
+                    "createdAt", text(cursor.createdAt())));
+        }
+        var result = db.query(query.build());
+        var last = result.lastEvaluatedKey();
+        Cursor next = last.isEmpty() ? null : new Cursor(last.get("sessionId").s(), last.get("createdAt").s());
+        return new Page(result.items().stream().map(SCHEMA::mapToItem).toList(), next);
+    }
+
+    @Override
+    public boolean deleteOwned(String userId, String sessionId) {
+        // Deleting adds no data, so the shared access filter is enough; no ACTIVE transaction is needed.
+        try {
+            db.deleteItem(DeleteItemRequest.builder().tableName(sessionsTable).key(key(sessionId))
+                    .conditionExpression("#owner = :owner")
+                    .expressionAttributeNames(Map.of("#owner", "userId"))
+                    .expressionAttributeValues(Map.of(":owner", text(userId))).build());
+            return true;
+        } catch (ConditionalCheckFailedException absentOrForeign) {
+            return false;
+        }
+    }
+
+    @Override
+    public void saveRecommendations(String userId, String sessionId, List<Recommendation> recommendations,
+            SessionAnalysis analysis) {
         validateRecommendations(recommendations);
+        validateAnalysis(analysis);
         var values = new RecommendationSession();
         values.setRecommendations(recommendations);
+        values.setAnalysis(analysis);
+        var stored = SCHEMA.itemToMap(values, true);
+        var names = new HashMap<>(Map.of("#results", "recommendations", "#owner", "userId"));
+        var attributes = new HashMap<>(Map.of(":owner", text(userId), ":empty", AttributeValue.builder().n("0").build(),
+                ":results", stored.get("recommendations")));
+        String assignments = "SET #results = :results";
+        if (analysis != null) {
+            assignments += ", #analysis = :analysis";
+            names.put("#analysis", "analysis");
+            attributes.put(":analysis", stored.get("analysis"));
+        }
         var update = Update.builder().tableName(sessionsTable).key(key(sessionId))
-                .updateExpression("SET #results = :results")
+                .updateExpression(assignments)
                 .conditionExpression("attribute_exists(sessionId) AND #owner = :owner AND "
                         + "(attribute_not_exists(#results) OR size(#results) = :empty)")
-                .expressionAttributeNames(Map.of("#results", "recommendations", "#owner", "userId"))
-                .expressionAttributeValues(Map.of(":owner", text(userId), ":empty", AttributeValue.builder().n("0").build(),
-                        ":results", SCHEMA.itemToMap(values, true).get("recommendations"))).build();
+                .expressionAttributeNames(names).expressionAttributeValues(attributes).build();
         try {
             db.transactWriteItems(TransactWriteItemsRequest.builder().clientRequestToken(UUID.randomUUID().toString())
                     .transactItems(activeUser(userId), TransactWriteItem.builder().update(update).build()).build());
@@ -101,7 +155,26 @@ public class DynamoSessionRepository implements SessionRepository, Recommendatio
                     || !seen.add(item.getMediaType() + ":" + item.getTmdbId())) {
                 throw ApiException.validation("추천 결과의 순위·콘텐츠 ID·유형을 확인해주세요.");
             }
+            if (item.getGenres() != null && !item.getGenres().stream().allMatch(Genre::isValidCode)
+                    || item.getMatchedParticipants() != null
+                    && !item.getMatchedParticipants().stream().allMatch(DynamoSessionRepository::validParticipant)) {
+                throw ApiException.validation("추천 결과의 장르 코드·참여자 번호를 확인해주세요.");
+            }
         }
+    }
+
+    private static void validateAnalysis(SessionAnalysis analysis) {
+        if (analysis == null) return;
+        boolean validScores = analysis.getGenreScores().stream().allMatch(score -> score != null
+                && Genre.isValidCode(score.getGenre()) && score.getCount() != null && score.getCount() >= 0);
+        boolean validMatches = analysis.getParticipantMatch().stream().allMatch(match -> match != null
+                && validParticipant(match.getIndex()) && match.getMatchRate() != null
+                && match.getMatchRate() >= 0 && match.getMatchRate() <= 1);
+        if (!validScores || !validMatches) throw ApiException.validation("취향 분석 값을 확인해주세요.");
+    }
+
+    private static boolean validParticipant(Integer index) {
+        return index != null && index >= 1 && index <= MAX_PARTICIPANTS;
     }
 
     private static Map<String, AttributeValue> key(String sessionId) { return Map.of("sessionId", text(sessionId)); }
