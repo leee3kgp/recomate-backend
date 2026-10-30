@@ -18,10 +18,10 @@ import org.springframework.web.client.RestClientException;
 public class RestClientTmdbClient implements TmdbClient {
     private final RestClient http;
 
-    public RestClientTmdbClient(RestClient.Builder builder,
-            @Value("${recomate.tmdb.base-url:https://api.themoviedb.org/3}") String baseUrl,
-            @Value("${recomate.tmdb.access-token:}") String accessToken) {
-        this.http = builder.baseUrl(baseUrl)
+    public RestClientTmdbClient(
+        @Value("${recomate.tmdb.base-url:https://api.themoviedb.org/3}") String baseUrl,
+        @Value("${recomate.tmdb.access-token:}") String accessToken) {
+        this.http = RestClient.builder().baseUrl(baseUrl)
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken).build();
     }
 
