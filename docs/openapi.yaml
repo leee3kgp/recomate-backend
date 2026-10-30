@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
-  title: RecoMate User and Session API
-  version: 0.2.0
+  title: RecoMate User, Session and Genre API
+  version: 0.3.0
   description: |
     Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
     The response fields, nickname handling and withdrawal lifecycle below are the confirmed
@@ -23,12 +23,46 @@ info:
     including shared-table session creation/deletion and NICKNAME_REQUIRED recovery.
     TMDB/scoring, the recommendation-generation HTTP API, and FE screen integration
     were not part of those checks. Synthetic recommendation results were seeded for deletion.
+    GET /api/genres returns genre master v1 as code/name pairs in frontend display order.
+    The genre catalog and user/session regression passed 77 live verification checkpoints
+    in the development deployment on 2026-10-29. FE screen integration remains separate.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
 security:
   - CognitoIdToken: []
 paths:
+  /api/genres:
+    get:
+      operationId: listGenres
+      summary: Get the ten supported RecoMate genres
+      description: |
+        Returns genre master v1 as code/name pairs in this fixed order: ACTION, COMEDY,
+        ROMANCE, DRAMA, SF, FANTASY, HORROR, CRIME, MYSTERY, ANIMATION.
+        No request body or parameters are required. Does not create a user profile,
+        change preferences, or call Cognito/TMDB to obtain the list. Authentication
+        and the shared DynamoDB user-status check still apply; withdrawing/withdrawn
+        users are rejected. A user without an app profile can read the catalog.
+      responses:
+        '200':
+          description: Complete genre catalog; exactly ten entries
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenreCatalog' }
+              example:
+                genres:
+                  - { code: ACTION, name: 액션 }
+                  - { code: COMEDY, name: 코미디 }
+                  - { code: ROMANCE, name: 로맨스 }
+                  - { code: DRAMA, name: 드라마 }
+                  - { code: SF, name: SF }
+                  - { code: FANTASY, name: 판타지 }
+                  - { code: HORROR, name: 공포 }
+                  - { code: CRIME, name: 범죄 }
+                  - { code: MYSTERY, name: 미스터리 }
+                  - { code: ANIMATION, name: 애니메이션 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /api/sessions:
     post:
       operationId: createSession
@@ -169,6 +203,26 @@ components:
     GenreCode:
       type: string
       enum: [ACTION, COMEDY, ROMANCE, DRAMA, SF, FANTASY, HORROR, CRIME, MYSTERY, ANIMATION]
+    GenreItem:
+      type: object
+      additionalProperties: false
+      required: [code, name]
+      properties:
+        code: { $ref: '#/components/schemas/GenreCode' }
+        name:
+          type: string
+          description: Display name from the fixed genre master v1
+    GenreCatalog:
+      type: object
+      additionalProperties: false
+      required: [genres]
+      properties:
+        genres:
+          type: array
+          minItems: 10
+          maxItems: 10
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/GenreItem' }
     CreateSessionRequest:
       type: object
       required: [participantCount, participants]

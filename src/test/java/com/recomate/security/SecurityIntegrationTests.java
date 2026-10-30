@@ -14,6 +14,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterAll;
@@ -82,12 +83,19 @@ class SecurityIntegrationTests {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.sub").value("owner-sub"));
     }
 
+    @Test
+    void signedIdTokenCanReadTheGenreCatalog() throws Exception {
+        mvc.perform(get("/api/genres").header("Authorization", "Bearer " + token(builder -> { })))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.genres.length()").value(10))
+                .andExpect(jsonPath("$.genres[0].code").value("ACTION"));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"missing", "malformed", "issuer", "audience", "access-token", "expired", "future", "subject", "no-expiry", "signature"})
     void invalidCredentialsAreRejected(String scenario) throws Exception {
-        var request = get("/api/security-test");
+        String bearer = null;
         if (!scenario.equals("missing")) {
-            String bearer = scenario.equals("malformed") ? "not-a-jwt" : token(builder -> {
+            bearer = scenario.equals("malformed") ? "not-a-jwt" : token(builder -> {
                 switch (scenario) {
                     case "issuer" -> builder.issuer("https://untrusted.invalid");
                     case "audience" -> builder.audience("other-client");
@@ -99,11 +107,14 @@ class SecurityIntegrationTests {
                     default -> { }
                 }
             }, scenario.equals("signature"));
-            request.header("Authorization", "Bearer " + bearer);
         }
-        mvc.perform(request).andExpect(status().isUnauthorized())
-                .andExpect(header().string("WWW-Authenticate", "Bearer"))
-                .andExpect(jsonPath("$.error.code").value("UNAUTHORIZED"));
+        for (String path : List.of("/api/security-test", "/api/genres")) {
+            var request = get(path);
+            if (bearer != null) request.header("Authorization", "Bearer " + bearer);
+            mvc.perform(request).andExpect(status().isUnauthorized())
+                    .andExpect(header().string("WWW-Authenticate", "Bearer"))
+                    .andExpect(jsonPath("$.error.code").value("UNAUTHORIZED"));
+        }
     }
 
     @Test

@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy user and session APIs behind the existing Cognito authorizer, using shared session storage and a digest-pinned Lambda image.
+Description: Deploy user, session and genre APIs behind the existing Cognito authorizer, using shared session storage and a digest-pinned Lambda image.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -10,6 +10,9 @@ Metadata:
         scope: shared
       - at: docs/session-integration.md
         has: Shared BE2 table and transaction-safe session and recommendation writes
+        scope: shared
+      - at: docs/genre-api.md
+        has: Shared genre catalog contract and authenticated route integration
         scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
@@ -186,6 +189,46 @@ Resources:
   GenresResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref MeResource, PathPart: genres}
+  GenreCatalogResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Expose the shared catalog separately from each user's saved preferences.
+        must: [Keep this route under the existing API prefix.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: genres}
+  GenreCatalogGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Serve the fixed genre master through the existing authenticated Spring application.
+        must: [Apply the existing Cognito authorizer., Preserve the full API path in Lambda proxy requests.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GenreCatalogResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  GenreCatalogOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Let Spring validate browser preflight origins before an authenticated catalog request.
+        must: [Keep preflight unauthenticated; catalog GET remains protected.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GenreCatalogResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
   SessionsResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: sessions}
@@ -327,21 +370,33 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/sessions'
-  ApiDeploymentSessionIntegrationV1:
+  GenreCatalogInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow catalog GET and preflight without widening user or session route permissions.
+        must: ['Restrict invocation to this project, API, Stage and catalog path.']
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/genres'
+  ApiDeploymentGenreCatalogV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish a fresh snapshot containing session POST and preflight alongside existing user methods.
+        why: Publish a fresh snapshot containing genre GET and preflight alongside existing user and session methods.
         must: [Wait for all methods., Change the logical ID for future route changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate user and session integration deployment
+      Description: RecoMate user, session and genre catalog deployment
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentSessionIntegrationV1
+      DeploymentId: !Ref ApiDeploymentGenreCatalogV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'
