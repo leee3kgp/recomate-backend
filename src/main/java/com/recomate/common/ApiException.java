@@ -26,4 +26,7 @@ public class ApiException extends RuntimeException {
     public static ApiException recommendationExists() {
         return new ApiException(409, "RECOMMENDATION_EXISTS", "이미 추천 결과가 있습니다.");
     }
+    public static ApiException upstream() {
+        return new ApiException(502, "UPSTREAM_ERROR", "외부 콘텐츠 서비스를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+    }
 }
