@@ -108,7 +108,8 @@ class SecurityIntegrationTests {
                 }
             }, scenario.equals("signature"));
         }
-        for (String path : List.of("/api/security-test", "/api/genres")) {
+        for (String path : List.of("/api/security-test", "/api/genres", "/api/sessions",
+                "/api/sessions/01234567-89ab-4cde-8fab-0123456789ab")) {
             var request = get(path);
             if (bearer != null) request.header("Authorization", "Bearer " + bearer);
             mvc.perform(request).andExpect(status().isUnauthorized())

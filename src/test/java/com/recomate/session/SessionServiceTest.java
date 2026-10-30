@@ -7,19 +7,42 @@ import com.recomate.session.domain.RecommendationSession;
 import com.recomate.session.dto.CreateSessionRequest;
 import com.recomate.session.dto.ParticipantRequest;
 import com.recomate.session.service.SessionService;
+import com.recomate.session.repository.SessionRepository;
 import java.util.ArrayList;
 import java.util.List;
 import java.time.Clock;
 import com.recomate.user.UserService;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
 import org.junit.jupiter.api.Test;
 
 class SessionServiceTest {
     private final List<RecommendationSession> saved = new ArrayList<>();
-    private final SessionService service = new SessionService(saved::add, mock(UserService.class), Clock.systemUTC());
+    private final SessionRepository repository = mock(SessionRepository.class);
+    private final SessionService service = new SessionService(repository, mock(UserService.class), Clock.systemUTC());
+
+    SessionServiceTest() {
+        doAnswer(invocation -> { saved.add(invocation.getArgument(0)); return null; }).when(repository).save(any());
+    }
 
     private static ParticipantRequest p(int i, String... genres) {
         return new ParticipantRequest(i, List.of(genres));
+    }
+
+    @Test
+    void creationTimestampsKeepStringOrderForCloseConcurrentInstants() {
+        var input = new CreateSessionRequest(2, List.of(p(1, "SF"), p(2, "ACTION")));
+        String previous = null;
+        for (String instant : List.of("2026-10-30T00:00:00Z", "2026-10-30T00:00:00.100Z",
+                "2026-10-30T00:00:00.123Z", "2026-10-30T00:00:00.124Z", "2026-10-30T00:00:01Z")) {
+            var fixed = Clock.fixed(java.time.Instant.parse(instant), java.time.ZoneOffset.UTC);
+            String timestamp = new SessionService(repository, mock(UserService.class), fixed)
+                    .createSession("user-sub", input).getCreatedAt();
+            assertEquals(java.time.Instant.parse(instant), java.time.Instant.parse(timestamp));
+            assertTrue(timestamp.matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z"));
+            if (previous != null) assertTrue(previous.compareTo(timestamp) < 0);
+            previous = timestamp;
+        }
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.recomate.user;
 import com.recomate.common.ApiException;
 import com.recomate.session.domain.Recommendation;
 import com.recomate.session.domain.RecommendationSession;
+import com.recomate.session.domain.SessionAnalysis;
 import com.recomate.session.dto.CreateSessionRequest;
 import com.recomate.session.dto.ParticipantRequest;
 import com.recomate.session.repository.DynamoSessionRepository;
@@ -79,6 +80,121 @@ class DynamoDbLocalTests {
 
     private UserRecord seed(String id, String name) {
         return new UserRecord(id, "test@example.test", name, List.of(), UserRecord.Status.ACTIVE, null);
+    }
+
+    @Test
+    void queryUsesOwnerIndexNewestFirstAndCursorSurvivesDeletedBoundary() {
+        String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        users.createIfAbsent(seed(owner, "owner")); users.createIfAbsent(seed(other, "other"));
+        var ids = new java.util.ArrayList<String>();
+        for (int index = 0; index < 3; index++) {
+            var session = new RecommendationSession();
+            session.setSessionId(UUID.randomUUID().toString()); session.setUserId(owner);
+            session.setParticipantCount(2); session.setCreatedAt("2026-10-30T00:00:0" + index + "Z");
+            repository.save(session); ids.add(session.getSessionId());
+        }
+        var foreign = new RecommendationSession(); foreign.setSessionId(UUID.randomUUID().toString());
+        foreign.setUserId(other); foreign.setParticipantCount(2); foreign.setCreatedAt("2026-10-31T00:00:00Z");
+        repository.save(foreign);
+        var first = repository.findByUser(owner, 1, null);
+        assertThat(first.sessions()).extracting(RecommendationSession::getSessionId).containsExactly(ids.get(2));
+        assertThat(first.nextCursor()).isNotNull();
+        db.deleteItem(DeleteItemRequest.builder().tableName(sessionsTable)
+                .key(Map.of("sessionId", AttributeValue.builder().s(ids.get(2)).build())).build());
+        var next = repository.findByUser(owner, 2, first.nextCursor());
+        assertThat(next.sessions()).extracting(RecommendationSession::getSessionId).containsExactly(ids.get(1), ids.get(0));
+        // DynamoDB may return a boundary key even when that page exhausts the results.
+        if (next.nextCursor() != null) {
+            var last = repository.findByUser(owner, 2, next.nextCursor());
+            assertThat(last.sessions()).isEmpty(); assertThat(last.nextCursor()).isNull();
+        }
+        assertThat(repository.findByUser(UUID.randomUUID().toString(), 20, null).sessions()).isEmpty();
+    }
+
+    @Test
+    void consistentDetailReadsLegacyAndEnrichedItemsWithoutChangingStorage() {
+        String id = UUID.randomUUID().toString(), owner = UUID.randomUUID().toString();
+        var item = new java.util.HashMap<String, AttributeValue>();
+        item.put("sessionId", AttributeValue.builder().s(id).build());
+        item.put("userId", AttributeValue.builder().s(owner).build());
+        item.put("participantCount", AttributeValue.builder().n("2").build());
+        item.put("createdAt", AttributeValue.builder().s("2026-10-30T00:00:00Z").build());
+        db.putItem(PutItemRequest.builder().tableName(sessionsTable).item(item).build());
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var legacy = repository.findById(id).orElseThrow();
+        assertThat(legacy.getRecommendations()).isEmpty(); assertThat(legacy.getAnalysis()).isNull();
+        item.put("recommendations", AttributeValue.builder().l(AttributeValue.builder().m(Map.of(
+                "rank", AttributeValue.builder().n("1").build(), "tmdbId", AttributeValue.builder().n("603").build(),
+                "mediaType", AttributeValue.builder().s("movie").build(), "releaseYear", AttributeValue.builder().n("1999").build(),
+                "genres", AttributeValue.builder().l(AttributeValue.builder().s("SF").build()).build(),
+                "matchedParticipants", AttributeValue.builder().l(AttributeValue.builder().n("1").build()).build())).build()).build());
+        item.put("analysis", AttributeValue.builder().m(Map.of("genreScores", AttributeValue.builder().l(
+                AttributeValue.builder().m(Map.of("genre", AttributeValue.builder().s("SF").build(),
+                        "count", AttributeValue.builder().n("1").build())).build()).build())).build());
+        item.put("futureMetadata", AttributeValue.builder().s("ignored on read").build());
+        db.putItem(PutItemRequest.builder().tableName(sessionsTable).item(item).build());
+        var detail = repository.findById(id).orElseThrow();
+        assertThat(detail.getRecommendations().getFirst().getReleaseYear()).isEqualTo(1999);
+        assertThat(detail.getRecommendations().getFirst().getGenres()).containsExactly("SF");
+        assertThat(detail.getAnalysis().getGenreScores().getFirst().getCount()).isEqualTo(1);
+        assertThat(repository.findById(UUID.randomUUID().toString())).isEmpty();
+        assertThat(storedSession(id)).isEqualTo(item);
+    }
+
+    @Test
+    void resultsAndAnalysisShareTheSessionItemAndLeaveWithIt() {
+        String owner = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var created = session(owner);
+        repository.save(created);
+        var result = recommendation();
+        result.setReleaseYear(1999); result.setGenres(List.of("SF")); result.setMatchedParticipants(List.of(1, 2));
+        var score = new SessionAnalysis.GenreScore(); score.setGenre("SF"); score.setCount(2);
+        var match = new SessionAnalysis.ParticipantMatch(); match.setIndex(1); match.setMatchRate(0.9);
+        var analysis = new SessionAnalysis();
+        analysis.setGenreScores(List.of(score)); analysis.setParticipantMatch(List.of(match));
+        repository.saveRecommendations(owner, created.getSessionId(), List.of(result), analysis);
+        var stored = repository.findById(created.getSessionId()).orElseThrow();
+        assertThat(stored.getRecommendations().getFirst().getMatchedParticipants()).containsExactly(1, 2);
+        assertThat(stored.getAnalysis().getGenreScores().getFirst().getCount()).isEqualTo(2);
+        assertThat(stored.getAnalysis().getParticipantMatch().getFirst().getMatchRate()).isEqualTo(0.9);
+        sessions.deleteAll(owner);
+        assertThat(storedSession(created.getSessionId())).isEmpty();
+    }
+
+    @Test
+    void analysisCannotBeSavedDuringWithdrawalOrOverExistingResults() {
+        String owner = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var created = session(owner);
+        repository.save(created);
+        repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation()));
+        assertThat(storedSession(created.getSessionId())).doesNotContainKey("analysis");
+        assertThatThrownBy(() -> repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation()), new SessionAnalysis()))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.code()).isEqualTo("RECOMMENDATION_EXISTS"));
+        var pending = session(owner);
+        repository.save(pending);
+        users.beginDeletion(owner);
+        assertThatThrownBy(() -> repository.saveRecommendations(owner, pending.getSessionId(), List.of(recommendation()), new SessionAnalysis()))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(401));
+        assertThat(storedSession(pending.getSessionId())).doesNotContainKey("analysis");
+    }
+
+    @Test
+    void onlyTheOwnerCanDeleteAndRepeatedDeletionFindsNothing() {
+        String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var created = session(owner);
+        repository.save(created);
+        assertThat(repository.deleteOwned(other, created.getSessionId())).isFalse();
+        assertThat(storedSession(created.getSessionId())).isNotEmpty();
+        assertThat(repository.deleteOwned(owner, created.getSessionId())).isTrue();
+        assertThat(storedSession(created.getSessionId())).isEmpty();
+        assertThat(repository.deleteOwned(owner, created.getSessionId())).isFalse();
     }
 
     @Test
