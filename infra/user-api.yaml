@@ -14,6 +14,9 @@ Metadata:
       - at: docs/genre-api.md
         has: Shared genre catalog contract and authenticated route integration
         scope: shared
+      - at: docs/session-query-api.md
+        has: Owned session reads, bounded index pagination and legacy response compatibility
+        scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
       - Generate the runtime policy baseline from source and scope it to these resources.
@@ -51,6 +54,11 @@ Parameters:
     Type: String
     Default: http://localhost:5173
     AllowedPattern: 'https?://[a-zA-Z0-9.-]+(:[0-9]{1,5})?'
+  TmdbAccessToken:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: TMDB API Read Access Token passed at deploy time; never store it in the repository.
   ExistingSessionsTableName:
     Type: String
     Default: RecommendationSession
@@ -132,8 +140,12 @@ Resources:
             Resource: !GetAtt UsersTable.Arn
           - Sid: SharedSessionLifecycle
             Effect: Allow
-            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem']
+            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem']
             Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingSessionsTableName}'
+          - Sid: ReadOwnedSessionIndex
+            Effect: Allow
+            Action: ['dynamodb:Query']
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingSessionsTableName}/index/userId-createdAt-index'
   ExecutionRole:
     Type: AWS::IAM::Role
     Metadata:
@@ -177,6 +189,7 @@ Resources:
           USERS_TABLE: !Ref UsersTable
           SESSIONS_TABLE: !Ref ExistingSessionsTableName
           CORS_ALLOWED_ORIGINS: !Ref AllowedOrigin
+          TMDB_ACCESS_TOKEN: !Ref TmdbAccessToken
   ApiPrefix:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref RootResourceId, PathPart: api}
@@ -232,6 +245,120 @@ Resources:
   SessionsResource:
     Type: AWS::ApiGateway::Resource
     Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: sessions}
+  SessionDetailResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Route owned session detail reads to the existing authenticated application.
+        must: [Keep the verified JWT subject as the owner., Do not add a second session table.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref SessionsResource, PathPart: '{sessionId}'}
+  SessionListGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Expose bounded newest-first queries through the existing Cognito authorizer.
+        must: [Keep authentication enabled., Preserve query parameters in the proxy request.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionsResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionDetailGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Read a base-table item consistently and enforce ownership in the application.
+        must: [Apply the same Cognito authorizer as session creation.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionDetailResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionDetailOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Keep detail GET authenticated., Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionDetailResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionDetailDelete:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Delete a session through the existing authorizer while the application enforces ownership.
+        must: [Apply the same Cognito authorizer as session reads.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionDetailResource
+      HttpMethod: DELETE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionRecommendationsResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Route recommendation generation for a session to the existing authenticated application.
+        must: [Keep this route under the session detail path.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref SessionDetailResource, PathPart: recommendations}
+  SessionRecommendationsPost:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Generate and store results for an owned session through the existing authorizer.
+        must: [Apply the same Cognito authorizer as session creation.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionRecommendationsResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionRecommendationsOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Keep recommendation POST authenticated., Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionRecommendationsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
   SessionPost:
     Type: AWS::ApiGateway::Method
     Metadata:
@@ -362,7 +489,7 @@ Resources:
     Type: AWS::Lambda::Permission
     Metadata:
       com.aws.cloudformation.Context:
-        why: Allow only the configured API Stage's session creation and preflight path to invoke the existing function.
+        why: Allow only the configured API Stage's session list, creation and preflight path to invoke the existing function.
         must: [Keep the source project and full path constrained.]
     Properties:
       FunctionName: !Ref ApiFunction
@@ -382,21 +509,33 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/genres'
-  ApiDeploymentGenreCatalogV1:
+  SessionDetailInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Permit detail, deletion and recommendation requests from this project's existing API and dev stage.
+        must: [Keep the project and stage constraints., Limit the source path to session children.]
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/sessions/*'
+  ApiDeploymentSessionCommandsV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish a fresh snapshot containing genre GET and preflight alongside existing user and session methods.
+        why: Publish session deletion and recommendation generation alongside all existing methods.
         must: [Wait for all methods., Change the logical ID for future route changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate user, session and genre catalog deployment
+      Description: RecoMate session commands with existing session, user and genre APIs
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentGenreCatalogV1
+      DeploymentId: !Ref ApiDeploymentSessionCommandsV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'
