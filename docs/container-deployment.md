@@ -4,13 +4,15 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
-## 장르 목록 API 추가 — 로컬 구현, 미배포
+## 장르 목록 API 배포 (2026-10-29)
 
 장르 목록 `GET /api/genres`와 사전 요청 `OPTIONS /api/genres`를 기존 Lambda에 연결하도록 `infra/user-api.yaml`을 확장했습니다. GET에는 기존 Cognito Authorizer를 적용하고 OPTIONS는 인증 없이 전달합니다. 사용자·세션 경로와 공유 RecommendationSession 테이블 설정을 유지하며 별도 Lambda·장르 테이블·데이터 권한을 추가하지 않습니다.
 
-새 `ApiDeploymentGenreCatalogV1` 스냅샷은 기존 사용자·세션 메서드와 새 장르 메서드 모두가 준비된 뒤 생성되며 기존 dev Stage가 이를 사용합니다. 장르 API 배포는 아직 적용하지 않았습니다. 아래 #6 이미지·실제 호출 결과는 이전 배포 기록이며 장르 기능을 포함하지 않습니다.
+새 `ApiDeploymentGenreCatalogV1` 스냅샷을 기존 사용자·세션 메서드와 새 장르 메서드 모두가 준비된 뒤 생성하고 dev Stage에 적용했습니다. 현재 배포 ID는 `uky3vl`입니다. 아래 #6 이미지·실제 호출 결과는 이전 배포 기록이며 장르 기능을 포함하지 않습니다.
 
 main의 CI 수정도 반영했습니다. GitHub Actions는 `runtime-ci` target으로 Lambda Adapter 다운로드 없이 컨테이너를 검사하고, Compose 및 Lambda 배포는 Adapter가 포함된 `runtime` target을 사용합니다. 두 target은 같은 애플리케이션과 공통 런타임 기반을 사용합니다.
+
+현재 배포 이미지는 `src-d955fea7152f7939`, digest `sha256:f691338b35827ab3579f8317749a8a39342f9e60a5427e38f4d7e7994725911d`입니다. CodeBuild `39fd4fbf-42ff-4714-a49e-799b45012dfe`의 Docker 빌드·컨테이너 검사가 성공했고 ECR basic scan 발견 항목은 0개였습니다. 변경 계획의 서비스 사전 검증 오류 0개를 확인한 뒤 승인받아 적용했으며, 실제 장르·사용자·세션 검증 77개 항목도 통과했습니다. 세부 범위와 재현 기준은 [장르 API 문서](genre-api.md)를 따릅니다.
 
 ## #6 실제 세션 연결 배포 (2026-10-28)
 
@@ -18,7 +20,7 @@ main의 CI 수정도 반영했습니다. GitHub Actions는 `runtime-ci` target�
 
 POST /api/sessions와 OPTIONS를 기존 Lambda에 연결하고, 새 Deployment 스냅샷으로 dev Stage에 반영했습니다. IAM Policy Autopilot을 다시 실행해 ACTIVE 조건 트랜잭션과 Scan 삭제 권한을 실제 테이블에 한정해 적용했습니다. 두 스택 적용이 완료됐고 로컬 테스트 110개, 실제 AWS 검증 항목 66개를 통과했습니다. API·공유 테이블은 개발 연동에 사용하도록 유지하며 테스트 사용자·세션은 정리했습니다.
 
-현재 이미지 태그는 `src-f603fb4e2abe4ed6`, digest는 `sha256:6393e97c1e98590ae957dbd741fc679e633291caccbf92b096b58d948f04d6f1`입니다. CodeBuild 실행 `70379989-06c3-4836-a9a9-f4c3b31d5dc8`의 Docker 빌드·읽기 전용 컨테이너 인증/CORS 검사와 ECR basic scan(COMPLETE, 발견 항목 0개)을 확인했습니다. 이 배포 검증은 2026-10-28 기록입니다. 이후 main 통합 시에도 같은 빌드 소스·기반 이미지·배포 옵션을 유지하며, 소스 ZIP 해시와 실제 Lambda 이미지 digest를 대조합니다.
+#6 당시 이미지 태그는 `src-f603fb4e2abe4ed6`, digest는 `sha256:6393e97c1e98590ae957dbd741fc679e633291caccbf92b096b58d948f04d6f1`입니다. CodeBuild 실행 `70379989-06c3-4836-a9a9-f4c3b31d5dc8`의 Docker 빌드·읽기 전용 컨테이너 인증/CORS 검사와 ECR basic scan(COMPLETE, 발견 항목 0개)을 확인했습니다. 이 배포 검증은 2026-10-28 기록이며 위 장르 추가 배포와 구분합니다.
 
 ## 공통 실행 기준
 

@@ -24,7 +24,8 @@ info:
     TMDB/scoring, the recommendation-generation HTTP API, and FE screen integration
     were not part of those checks. Synthetic recommendation results were seeded for deletion.
     GET /api/genres returns genre master v1 as code/name pairs in frontend display order.
-    The genre catalog in this version is locally implemented and not yet deployed.
+    The genre catalog and user/session regression passed 77 live verification checkpoints
+    in the development deployment on 2026-10-29. FE screen integration remains separate.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev

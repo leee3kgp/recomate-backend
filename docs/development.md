@@ -59,7 +59,7 @@ CORS의 기본 허용 주소는 `http://localhost:5173`, `http://127.0.0.1:5173`
 
 전체 장르 목록은 `GET /api/genres`, 개인 선호 장르는 `/api/users/me/genres`를 사용합니다. 목록은 공통 `Genre`의 고정 코드·표시명 10개를 반환하며 별도 장르 테이블이나 TMDB 호출은 없습니다. 기존 JWT 검증과 사용자 탈퇴 상태 검사를 적용하고 앱 프로필은 생성하지 않습니다. 상세 응답과 FE 연결 기준은 [장르 목록 API](genre-api.md)를 참고합니다.
 
-장르 브랜치에 최신 main의 사용자·세션 연결과 CI 구성을 반영한 작업 트리에서 2026-10-29 테스트 119개(실패·오류·건너뜀 0개)와 JAR 빌드를 통과했습니다. 장르 API는 로컬 구현 상태이며 AWS 배포·실제 FE 연결은 아직 진행하지 않았습니다.
+장르 브랜치에 최신 main의 사용자·세션 연결과 CI 구성을 반영한 작업 트리에서 2026-10-29 테스트 119개(실패·오류·건너뜀 0개)와 JAR 빌드를 통과했습니다. 같은 소스로 CodeBuild 이미지 빌드·AWS 배포 후 장르·사용자·세션 기능의 실제 검증 77개 항목도 통과했으며, 2026-10-30 실제 로그인과 전체 77개 항목을 다시 실행해 모두 통과했습니다. 현재 개발용 장르 URL은 `https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev/api/genres`입니다. FE 화면 연결은 별도이며 코드 반영·리뷰 상태는 [장르 API 이슈 #8](https://github.com/leee3kgp/recomate-backend/issues/8)에서 확인합니다.
 
 ## 사용자 API와 저장소
 
@@ -106,9 +106,9 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 
 개발용 AWS 검증 항목 66개를 통과했습니다. 실제 SRP 로그인·사용자별 데이터 분리·프로필과 장르 저장·POST 세션 생성·공유 테이블의 추천 결과 저장·탈퇴 시 본인 데이터 및 Cognito 삭제·기존 토큰 차단·반복 탈퇴·잘못된 초기 닉네임의 409 응답 및 PATCH 복구를 확인했습니다. 실제 DynamoDB 트랜잭션도 탈퇴 후 세션 재생성을 거절했습니다. 정상 검증의 임시 Cognito 사용자 3명과 세션은 정리됐고, 검증 스크립트의 캐시 헤더 검사 수정 전 첫 시도에서 만든 임시 사용자 3명도 정리했습니다. 최소 TTL 탈퇴 상태만 사용자 테이블에 48시간 유지합니다. 비밀번호·토큰은 프로세스 메모리에서만 사용했습니다. 추천 결과는 테스트용 값을 저장한 것이며 TMDB·추천 알고리즘·추천 생성 HTTP API를 검증한 것은 아닙니다.
 
-컨테이너 CI는 Compose v2.39.4를 명시하고 CodeBuild와 같은 401·CORS 검증 스크립트를 사용합니다. Compose 설정 검사와 actionlint 1.7.12 문법 검사는 기존 검증에서 통과했으며, main 통합 변경의 GitHub Actions 전체 실행은 푸시 후 확인합니다. 실제 BE2 구조의 저장·탈퇴 통합은 위 검증에 포함되며 팀 코드 리뷰와 FE 브라우저 화면 연결은 별도입니다.
+컨테이너 CI는 Compose v2.39.4를 명시하고 CodeBuild와 같은 401·CORS 검증 스크립트를 사용합니다. Compose 설정 검사와 actionlint 1.7.12 문법 검사는 기존 검증에서 통과했습니다. main을 반영한 장르 브랜치 커밋 `4206389`의 [GitHub Actions 실행](https://github.com/leee3kgp/recomate-backend/actions/runs/40835162023)에서도 `dynamodb-integration`과 `build-and-start`가 모두 성공했습니다. 실제 BE2 구조의 저장·탈퇴 통합은 위 검증에 포함되며 팀 코드 리뷰와 FE 브라우저 화면 연결은 별도입니다.
 
-개발용 API 기준 주소는 `https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev`이며, 예를 들어 프로필 경로는 이 주소 뒤에 `/api/users/me`를 붙입니다. 현재 사용 테이블은 `recomate-user-api-dev-users`, `RecommendationSession`입니다. 로컬에서 같은 테이블을 쓰려면 이 이름을 USERS_TABLE·SESSIONS_TABLE에 지정하고 별도의 개발자 인증을 연결합니다. 이전 `recomate-user-api-dev-validation-sessions`는 보존하지만 라이브 API는 사용하지 않습니다. Lambda 메모리는 기존 3008 MiB를 유지했습니다. 이번 배포 후 최초 세션 사전 요청은 약 12.7초, 재검증의 사전 요청은 약 0.3초였습니다. 이는 개별 측정이며 부하·동시 콜드 스타트 성능은 별도 검증 대상입니다.
+개발용 API 기준 주소는 `https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev`이며, 예를 들어 프로필 경로는 이 주소 뒤에 `/api/users/me`를 붙입니다. 현재 사용 테이블은 `recomate-user-api-dev-users`, `RecommendationSession`입니다. 로컬에서 같은 테이블을 쓰려면 이 이름을 USERS_TABLE·SESSIONS_TABLE에 지정하고 별도의 개발자 인증을 연결합니다. 이전 `recomate-user-api-dev-validation-sessions`는 보존하지만 라이브 API는 사용하지 않습니다. Lambda 메모리는 기존 3008 MiB를 유지했습니다. 2026-10-28 배포 당시 최초 세션 사전 요청은 약 12.7초, 재검증의 사전 요청은 약 0.3초였습니다. 장르 추가 배포 후 첫 사전 요청은 약 9.8초였습니다. 이는 개별 측정이며 부하·동시 콜드 스타트 성능은 별도 검증 대상입니다.
 
 ## 관련 문서
 
