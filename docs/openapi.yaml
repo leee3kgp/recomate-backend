@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
   title: RecoMate User, Session and Genre API
-  version: 0.3.0
+  version: 0.5.0
   description: |
     Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
     The response fields, nickname handling and withdrawal lifecycle below are the confirmed
     BE1 implementation policy. Session creation and persistence integrate the BE2 PR #9
-    sessionId schema. TMDB/scoring and the recommendation-generation HTTP API are separate.
+    sessionId schema. TMDB lookup and scoring (#13) run behind the recommendation route.
     Identity is always verified JWT sub; client-supplied userId cannot select another user.
     DynamoDB is authoritative for the app nickname; Cognito only supplies the initial profile.
     Nicknames are non-unique display names; userId (verified sub) is the identity key.
@@ -26,6 +26,11 @@ info:
     GET /api/genres returns genre master v1 as code/name pairs in frontend display order.
     The genre catalog and user/session regression passed 77 live verification checkpoints
     in the development deployment on 2026-10-29. FE screen integration remains separate.
+    Session list/detail reads, stored-field compatibility and existing regression paths
+    passed 117 live checkpoints on 2026-10-30. Recommendation fixtures were synthetic;
+    TMDB, recommendation generation and FE browser integration were not part of these checks.
+    Session deletion, TMDB-backed recommendation generation and existing regression paths
+    passed 146 live checkpoints on 2026-10-30. FE browser integration was not part of these checks.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
@@ -64,6 +69,39 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/InternalError' }
   /api/sessions:
+    get:
+      operationId: listMySessions
+      summary: List the verified user's session summaries
+      description: |
+        Query userId-createdAt-index using only JWT sub, with createdAt string descending.
+        Equal timestamps have no tie order. New creation timestamps use three fractional
+        digits; legacy variable-precision keys are preserved. The GSI is eventually
+        consistent and page traversal is not a snapshot. Return at most limit entries;
+        a DynamoDB 1 MB boundary may shorten the page. Continue until nextToken is null;
+        a non-null token may lead to an empty final page. No profile initialization,
+        TMDB calls, recommendation generation or writes. Unknown/repeated parameters,
+        blank/invalid tokens and another user's token are rejected with 400.
+      parameters:
+        - in: query
+          name: limit
+          description: Optional decimal integer without sign, whitespace or leading zero.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - in: query
+          name: nextToken
+          description: Opaque URL-safe cursor returned by the server. Navigation only, not a credential. Do not modify.
+          schema: { type: string, minLength: 1, maxLength: 2048, pattern: '^[A-Za-z0-9_-]+$' }
+      responses:
+        '200':
+          description: Own session summaries; empty array when absent
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionList' }
+              example: { sessions: [], nextToken: null }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
     post:
       operationId: createSession
       summary: Create a recommendation session using the verified user's sub
@@ -85,7 +123,7 @@ paths:
           description: Session saved
           headers:
             Location:
-              description: Session path; GET on this path is a separate implementation task
+              description: Session path; authenticated owner can GET this path
               schema: { type: string, example: /api/sessions/00000000-0000-4000-8000-000000000000 }
           content:
             application/json:
@@ -98,6 +136,91 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/NicknameRequired' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /api/sessions/{sessionId}:
+    get:
+      operationId: getMySession
+      summary: Get an owned session and its stored recommendation results
+      description: |
+        Strongly consistent base-table GetItem followed by JWT-sub ownership check.
+        Missing and foreign sessions use the same 404. Standard hyphenated UUIDs only;
+        uppercase UUIDs are normalized. Query parameters are not accepted. Reads do
+        not initialize profiles or modify storage. Missing/null participants and
+        recommendations are empty arrays. Missing analysis is null. Optional absent
+        recommendation fields are omitted; no enrichment or calculation runs on read.
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The authenticated user's stored session
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionDetail' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/SessionNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: deleteMySession
+      summary: Delete an owned session and its embedded recommendation results
+      description: |
+        Conditional DeleteItem on the JWT-sub owner. Missing and foreign sessions use the
+        same 404, so repeating a delete also returns 404. Withdrawing/withdrawn users are
+        rejected by the shared access check. Standard hyphenated UUIDs only.
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Session deleted; no response body }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/SessionNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/sessions/{sessionId}/recommendations:
+    post:
+      operationId: createRecommendations
+      summary: Generate and store TOP 3 recommendations for an owned session
+      description: |
+        No request body. Uses the participant genres stored in the session. Duplicates are
+        rejected before external calls and again by the conditional write. Results and
+        analysis are stored together in the session item with the ACTIVE transaction, and
+        withdrawal removes them with the session. Stored genres must be genre master codes;
+        matchedParticipants and analysis indexes must be 1-6. genreScores counts the
+        participants who selected each genre. matchRate is the share of the recommended
+        titles matching that participant. TMDB failure returns 502 and stores nothing.
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Results generated and stored
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecommendationResult' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/SessionNotFound' }
+        '409':
+          description: RECOMMENDATION_EXISTS - this session already has stored results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '502':
+          description: UPSTREAM_ERROR - TMDB could not be reached or rejected the request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /api/users/me:
     get:
       operationId: getMyProfile
@@ -269,17 +392,86 @@ components:
         recommendations:
           type: array
           maxItems: 3
+          items: { $ref: '#/components/schemas/StoredRecommendation' }
+        createdAt: { type: string, format: date-time }
+    SessionList:
+      type: object
+      additionalProperties: false
+      required: [sessions, nextToken]
+      properties:
+        sessions:
+          type: array
+          maxItems: 100
           items:
             type: object
-            required: [rank, tmdbId, mediaType]
+            additionalProperties: false
+            required: [sessionId, participantCount, createdAt]
             properties:
-              rank: { type: integer, minimum: 1, maximum: 3 }
-              tmdbId: { type: integer, minimum: 1 }
-              mediaType: { type: string, enum: [movie, tv] }
-              title: { type: [string, 'null'] }
-              posterPath: { type: [string, 'null'] }
-              score: { type: [number, 'null'] }
-        createdAt: { type: string, format: date-time }
+              sessionId: { type: string, format: uuid }
+              participantCount: { type: integer, minimum: 2, maximum: 6 }
+              createdAt: { type: string, format: date-time }
+        nextToken: { type: [string, 'null'], maxLength: 2048 }
+    SessionDetail:
+      type: object
+      additionalProperties: false
+      required: [sessionId, userId, participantCount, participants, recommendations, createdAt, analysis]
+      properties:
+        sessionId: { $ref: '#/components/schemas/Session/properties/sessionId' }
+        userId: { $ref: '#/components/schemas/Session/properties/userId' }
+        participantCount: { $ref: '#/components/schemas/Session/properties/participantCount' }
+        participants:
+          type: array
+          maxItems: 6
+          items: { $ref: '#/components/schemas/Session/properties/participants/items' }
+        recommendations: { $ref: '#/components/schemas/Session/properties/recommendations' }
+        createdAt: { $ref: '#/components/schemas/Session/properties/createdAt' }
+        analysis: { $ref: '#/components/schemas/StoredAnalysis' }
+    RecommendationResult:
+      type: object
+      additionalProperties: false
+      required: [sessionId, recommendations, analysis]
+      properties:
+        sessionId: { $ref: '#/components/schemas/Session/properties/sessionId' }
+        recommendations: { $ref: '#/components/schemas/Session/properties/recommendations' }
+        analysis: { $ref: '#/components/schemas/StoredAnalysis' }
+    StoredRecommendation:
+      type: object
+      additionalProperties: false
+      required: [rank, tmdbId, mediaType]
+      properties:
+        rank: { type: integer, minimum: 1, maximum: 3 }
+        tmdbId: { type: integer, minimum: 1 }
+        mediaType: { type: string, enum: [movie, tv] }
+        title: { type: string }
+        posterPath: { type: string }
+        score: { type: number }
+        releaseYear: { type: integer }
+        voteAverage: { type: number }
+        genres: { type: array, items: { $ref: '#/components/schemas/GenreCode' } }
+        matchedParticipants: { type: array, items: { type: integer, minimum: 1, maximum: 6 } }
+    StoredAnalysis:
+      type: [object, 'null']
+      additionalProperties: false
+      required: [genreScores, participantMatch]
+      properties:
+        genreScores:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [genre, count]
+            properties:
+              genre: { $ref: '#/components/schemas/GenreCode' }
+              count: { type: integer, minimum: 0 }
+        participantMatch:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [index, matchRate]
+            properties:
+              index: { type: integer, minimum: 1, maximum: 6 }
+              matchRate: { type: number, minimum: 0, maximum: 1 }
     Profile:
       type: object
       additionalProperties: false
@@ -313,6 +505,12 @@ components:
             code: { type: string }
             message: { type: string }
   responses:
+    SessionNotFound:
+      description: NOT_FOUND - absent session or a session owned by someone else; identical response
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: NOT_FOUND, message: 세션을 찾을 수 없습니다. } }
     InvalidRequest:
       description: VALIDATION_ERROR - missing/null/incorrect type, malformed JSON, unknown fields, invalid nickname or genre codes, duplicate genres
       content:
@@ -366,5 +564,7 @@ x-dynamodb:
         partitionKey: { name: userId, type: S }
         sortKey: { name: createdAt, type: S }
     recommendations: Embedded in session items; deleting a session removes its results
+    delete: Conditional DeleteItem keyed by sessionId and requiring the JWT-sub owner.
+    read: List uses bounded GSI Query with JWT-sub key and descending stored createdAt; detail uses consistent base-table GetItem and ownership check. No read-side writes or enrichment.
     erase: After DELETING, strongly consistent base-table Scan filtered by userId; paginate every page and delete using sessionId-only keys in batches of 25; retry unprocessed items. Never use GSI emptiness as proof of completion.
     integrationRequirement: Every session and recommendation write must check user status ACTIVE atomically in the same DynamoDB transaction. Recommendation updates must also require an existing owned session and empty previous results. Ensure the app profile exists before session creation.

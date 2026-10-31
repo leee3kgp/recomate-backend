@@ -24,7 +24,7 @@ public class CognitoIdentityDirectory implements IdentityDirectory {
     public ProfileSeed profile(String userId) {
         try {
             var response = client.adminGetUser(AdminGetUserRequest.builder().userPoolId(poolId).username(userId).build());
-            Map<String, String> attributes = response.userAttributes().stream()
+            Map<String, String> attributes = response.userAttributes().stream().filter(item -> item.value() != null)
                     .collect(Collectors.toMap(AttributeType::name, AttributeType::value));
             if (!userId.equals(attributes.get("sub")) || !Boolean.TRUE.equals(response.enabled())) {
                 throw ApiException.unauthorized();

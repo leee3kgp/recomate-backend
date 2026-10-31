@@ -4,15 +4,33 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## 세션 삭제·추천 경로 배포 (2026-10-30)
+
+기존 스택에 `DELETE /api/sessions/{sessionId}`, `POST /api/sessions/{sessionId}/recommendations`와 추천 경로 OPTIONS를 추가하고 `ApiDeploymentSessionCommandsV1` 스냅샷을 dev Stage에 반영했습니다. 실행 역할에는 공유 세션 테이블의 `dynamodb:DeleteItem`만 추가했습니다. 테이블·키·Cognito 리소스는 변경하지 않았습니다.
+
+현재 이미지는 `src-964fa901ac5ec4fc`, digest `sha256:19aafdda8b82be3b26d66d5bc2f6dfc9190957797b5a982fd6de59e23cc09053`입니다. CodeBuild `2516803b-e2c4-41ee-a80a-fec9debf37f9`의 linux/amd64 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개), 로컬 테스트 177개 및 실제 AWS 검증 146개를 확인했습니다. 변경 계획 `recommendation-link-964fa901ac5ec4fc`를 검토 후 사용자 승인으로 적용했고 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 현재 dev 배포 ID는 `zbut4a`이며 범위와 호출 기준은 [세션 조회·삭제 API](session-query-api.md)를 따릅니다.
+
+Lambda의 `TMDB_ACCESS_TOKEN`은 저장소에 넣지 않고 `TmdbAccessToken` NoEcho 파라미터로 전달합니다. 스택을 다시 배포할 때는 이 파라미터에 `UsePreviousValue=true`를 지정해야 토큰이 비워지지 않습니다.
+
+## 세션 조회 API 배포 (2026-10-30)
+
+이 절은 조회 API 배포 당시 기록입니다. 현재 이미지는 위 삭제·추천 경로 배포 결과를 따릅니다.
+
+기존 스택에 `GET /api/sessions`, `GET /api/sessions/{sessionId}`와 상세 OPTIONS를 추가하고 `ApiDeploymentSessionReadV1` 스냅샷을 dev Stage에 반영했습니다. 실행 역할에는 세션의 `userId-createdAt-index` ARN에 대한 Query만 추가했습니다. 테이블·키·Cognito 리소스와 기존 생성·장르·탈퇴 경로를 유지합니다.
+
+현재 이미지는 `src-411753bd3e0c758b`, digest `sha256:edada919ec19abd83cc9fcb5b563df70a6d7ea8708d4e32af6c203cacda4aa64`입니다. CodeBuild `89d8cbd2-90f7-45f6-83b8-3af786223a92`의 linux/amd64 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개), 로컬 테스트 149개 및 실제 AWS 검증 117개를 확인했습니다. 변경 계획 검증 후 사용자 승인으로 적용했고 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 현재 dev 배포 ID는 `tt875t`이며 범위·호환성·FE 호출 기준은 [세션 조회 API](session-query-api.md)를 따릅니다.
+
 ## 장르 목록 API 배포 (2026-10-29)
+
+이 절은 장르 배포 당시 기록입니다. 현재 이미지는 위 세션 조회 배포 결과를 따릅니다.
 
 장르 목록 `GET /api/genres`와 사전 요청 `OPTIONS /api/genres`를 기존 Lambda에 연결하도록 `infra/user-api.yaml`을 확장했습니다. GET에는 기존 Cognito Authorizer를 적용하고 OPTIONS는 인증 없이 전달합니다. 사용자·세션 경로와 공유 RecommendationSession 테이블 설정을 유지하며 별도 Lambda·장르 테이블·데이터 권한을 추가하지 않습니다.
 
-새 `ApiDeploymentGenreCatalogV1` 스냅샷을 기존 사용자·세션 메서드와 새 장르 메서드 모두가 준비된 뒤 생성하고 dev Stage에 적용했습니다. 현재 배포 ID는 `uky3vl`입니다. 아래 #6 이미지·실제 호출 결과는 이전 배포 기록이며 장르 기능을 포함하지 않습니다.
+새 `ApiDeploymentGenreCatalogV1` 스냅샷을 기존 사용자·세션 메서드와 새 장르 메서드 모두가 준비된 뒤 생성하고 dev Stage에 적용했습니다. 당시 배포 ID는 `uky3vl`입니다. 아래 #6 이미지·실제 호출 결과는 이전 배포 기록이며 장르 기능을 포함하지 않습니다.
 
 main의 CI 수정도 반영했습니다. GitHub Actions는 `runtime-ci` target으로 Lambda Adapter 다운로드 없이 컨테이너를 검사하고, Compose 및 Lambda 배포는 Adapter가 포함된 `runtime` target을 사용합니다. 두 target은 같은 애플리케이션과 공통 런타임 기반을 사용합니다.
 
-현재 배포 이미지는 `src-d955fea7152f7939`, digest `sha256:f691338b35827ab3579f8317749a8a39342f9e60a5427e38f4d7e7994725911d`입니다. CodeBuild `39fd4fbf-42ff-4714-a49e-799b45012dfe`의 Docker 빌드·컨테이너 검사가 성공했고 ECR basic scan 발견 항목은 0개였습니다. 변경 계획의 서비스 사전 검증 오류 0개를 확인한 뒤 승인받아 적용했으며, 실제 장르·사용자·세션 검증 77개 항목도 통과했습니다. 세부 범위와 재현 기준은 [장르 API 문서](genre-api.md)를 따릅니다.
+당시 배포 이미지는 `src-d955fea7152f7939`, digest `sha256:f691338b35827ab3579f8317749a8a39342f9e60a5427e38f4d7e7994725911d`입니다. CodeBuild `39fd4fbf-42ff-4714-a49e-799b45012dfe`의 Docker 빌드·컨테이너 검사가 성공했고 ECR basic scan 발견 항목은 0개였습니다. 변경 계획의 서비스 사전 검증 오류 0개를 확인한 뒤 승인받아 적용했으며, 실제 장르·사용자·세션 검증 77개 항목도 통과했습니다. 세부 범위와 재현 기준은 [장르 API 문서](genre-api.md)를 따릅니다.
 
 ## #6 실제 세션 연결 배포 (2026-10-28)
 
@@ -48,7 +66,7 @@ ARM 기반 Mac에서는 amd64 에뮬레이션으로 빌드가 느릴 수 있습�
 | 파일 | 목적 |
 | --- | --- |
 | `infra/build.yaml` | 비공개 소스 ZIP 버킷, immutable ECR 저장소, CodeBuild 역할·프로젝트, 암호화된 빌드 로그 |
-| `infra/user-api.yaml` | 사용자 테이블, 이전 검증용 테이블 보존, 공유 BE2 테이블 연결, 실행 역할, Lambda, 기존 API Gateway의 사용자·세션 생성 경로와 개발 Stage |
+| `infra/user-api.yaml` | 사용자 테이블, 이전 검증용 테이블 보존, 공유 BE2 테이블 연결, 실행 역할, Lambda, 기존 API Gateway의 사용자·장르·세션·추천 경로와 개발 Stage |
 | `infra/sessions.yaml` | PR #9의 sessionId 기본 키·사용자별 GSI를 사용하는 공유 RecommendationSession 테이블 |
 | `buildspec.yml` | Docker 이미지 빌드, 읽기 전용 컨테이너의 401·CORS 확인, 성공한 이미지만 ECR push |
 | `scripts/package-source.py` | 환경 설정·자격 증명을 제외한 소스 ZIP과 내용 해시 생성 |

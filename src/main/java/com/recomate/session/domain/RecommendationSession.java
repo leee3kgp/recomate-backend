@@ -21,6 +21,7 @@ public class RecommendationSession {
     private List<Participant> participants = new ArrayList<>();
     private List<Recommendation> recommendations = new ArrayList<>();
     private String createdAt; // ISO-8601 (UTC)
+    private SessionAnalysis analysis;
 
     @DynamoDbPartitionKey
     public String getSessionId() { return sessionId; }
@@ -42,4 +43,6 @@ public class RecommendationSession {
     @DynamoDbSecondarySortKey(indexNames = USER_INDEX)
     public String getCreatedAt() { return createdAt; }
     public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+    public SessionAnalysis getAnalysis() { return analysis; }
+    public void setAnalysis(SessionAnalysis analysis) { this.analysis = analysis; }
 }

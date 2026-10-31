@@ -1,6 +1,7 @@
 package com.recomate.session;
 
 import com.recomate.session.domain.RecommendationSession;
+import com.recomate.session.repository.RecommendationRepository;
 import com.recomate.session.repository.SessionRepository;
 import com.recomate.user.IdentityDirectory;
 import com.recomate.user.SessionDataEraser;
@@ -43,6 +44,7 @@ class SessionApiTests {
     @MockitoBean IdentityDirectory identities;
     @MockitoBean SessionDataEraser eraser;
     @MockitoBean SessionRepository sessions;
+    @MockitoBean RecommendationRepository results;
 
     @BeforeEach
     void defaults() { when(users.find(OWNER)).thenReturn(Optional.of(USER)); }

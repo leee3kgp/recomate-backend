@@ -63,6 +63,8 @@ CORS의 기본 허용 주소는 `http://localhost:5173`, `http://127.0.0.1:5173`
 
 ## 사용자 API와 저장소
 
+세션 목록·상세 조회와 삭제, 추천 생성 경로는 [세션 조회·삭제 명세](session-query-api.md)를 따릅니다. 목록은 기존 사용자 GSI의 제한된 Query, 상세는 기본 테이블의 강한 일관성 GetItem을 사용합니다. 2026-10-30 전체 테스트 177개와 실행 JAR 빌드, 개발용 AWS 배포 후 실제 검증 146개 항목을 통과했습니다. 페이지·소유권·과거 추천 데이터 호환성과 실제 배포 결과는 해당 문서에서 관리합니다.
+
 사용자 API 5개는 `/api/users/me`, `/api/users/me/genres`에 있습니다. 입출력·오류·저장 구조는 [OpenAPI 명세](openapi.yaml)를 따릅니다. 닉네임은 DynamoDB가 기준이며, 프론트 화면은 프로필 API의 nickname을 표시합니다. 가입 시에만 Cognito에서 이메일과 닉네임을 가져옵니다.
 
 프로필 응답·닉네임 처리·탈퇴 상태 전이는 담당자 승인으로 확정한 구현 기준입니다. PR #9의 sessionId 기본 키와 세션 생성 코드를 통합했으며, 저장·탈퇴 연결 계약과 실제 AWS 검증 결과는 [세션 연결 문서](session-integration.md)에 정리했습니다.
@@ -94,9 +96,9 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 
 이 명령에도 실제 테이블 환경 변수와 AWS 접근 권한이 필요합니다. 네이티브 실행 시 사용할 개발자 프로필을 실행 환경에 지정하고, 배포 환경에서는 실행 역할을 사용합니다.
 
-백엔드 실행 역할에 필요한 작업은 사용자 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `ConditionCheckItem`, 공유 세션 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Scan`, `BatchWriteItem`, 해당 User Pool의 `cognito-idp:AdminGetUser`, `AdminDeleteUser`입니다. 코드 분석 초안을 기반으로 배포 대상 리소스에 한정합니다.
+백엔드 실행 역할에 필요한 작업은 사용자 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `ConditionCheckItem`, 공유 세션 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Scan`, `BatchWriteItem`, 해당 세션 GSI의 `dynamodb:Query`, 해당 User Pool의 `cognito-idp:AdminGetUser`, `AdminDeleteUser`입니다. 코드 분석 초안을 기반으로 배포 대상 리소스에 한정합니다.
 
-**BE2 연결:** POST /api/sessions는 기존 프로필 초기화와 공통 인증을 사용합니다. 세션·추천 쓰기는 사용자 ACTIVE 조건 트랜잭션으로 저장하고, 공통 필터도 모든 `/api/**` 경로에서 탈퇴 상태를 검사합니다. TMDB·추천 알고리즘·추천 생성 HTTP API는 포함하지 않으며 추천 담당자는 공통 저장소에 연결합니다.
+**BE2 연결:** POST /api/sessions는 기존 프로필 초기화와 공통 인증을 사용합니다. 세션·추천 쓰기는 사용자 ACTIVE 조건 트랜잭션으로 저장하고, 공통 필터도 모든 `/api/**` 경로에서 탈퇴 상태를 검사합니다. 추천 생성 경로는 `TmdbRecommendationGenerator`로 #13의 TMDB 조회·점수 계산과 저장을 연결합니다. 실제 호출에는 `TMDB_ACCESS_TOKEN` 환경 변수가 필요합니다.
 
 ## 테스트 범위
 
@@ -114,5 +116,7 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 
 - [컨테이너 구성과 AWS 배포](container-deployment.md)
 - [장르 목록 API](genre-api.md)
+- [세션 조회·삭제 API](session-query-api.md)
+- [사용자 API와 세션 연결](session-integration.md)
 - [프론트·API 명세 호환성 점검 기록](frontend-container-review.md)
 - [Docker Desktop 설치 안내](https://docs.docker.com/desktop/setup/install/windows-install/)

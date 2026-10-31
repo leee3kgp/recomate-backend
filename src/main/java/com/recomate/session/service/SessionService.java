@@ -1,5 +1,6 @@
 package com.recomate.session.service;
 
+import com.recomate.common.ApiException;
 import com.recomate.common.InvalidRequestException;
 import com.recomate.genre.Genre;
 import com.recomate.session.domain.Participant;
@@ -10,6 +11,8 @@ import com.recomate.session.repository.SessionRepository;
 import com.recomate.user.UserService;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -20,6 +23,8 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class SessionService {
+    // Fixed millisecond precision keeps new GSI string keys in chronological order and matches the JS date format.
+    private static final DateTimeFormatter CREATED_AT = new DateTimeFormatterBuilder().appendInstant(3).toFormatter();
     private final SessionRepository repository;
     private final UserService users;
     private final Clock clock;
@@ -43,9 +48,13 @@ public class SessionService {
         session.setParticipantCount(request.participantCount());
         session.setParticipants(participants);
         session.setRecommendations(new ArrayList<>());
-        session.setCreatedAt(Instant.now(clock).toString());
+        session.setCreatedAt(CREATED_AT.format(Instant.now(clock)));
         repository.save(session);
         return session;
+    }
+
+    public void deleteSession(String userId, String rawId) {
+        if (!repository.deleteOwned(userId, SessionIds.parse(rawId))) throw ApiException.notFound();
     }
 
     private void validate(CreateSessionRequest request) {

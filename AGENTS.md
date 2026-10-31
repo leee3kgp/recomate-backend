@@ -6,7 +6,7 @@
 - Use the project's Java 21 toolchain and standard Gradle wrapper, or the shared Docker workflow. Keep deployment images single-platform `linux/amd64` and preserve the Lambda-compatible build options.
 - Container images must not contain personal AWS profiles or credentials. Lambda uses its execution role; local AWS access is a separate explicit configuration when needed.
 - Do not create Git commits, push branches, or create pull requests without the user's explicit instruction for that action.
-- User API #6 policy choices are authorized: minimal profile response, DynamoDB-authoritative nickname, user re-entry for invalid initial nickname, and durable/idempotent withdrawal. Share decisions for integration; do not repeatedly request policy approval. Keep actual RecommendationSession integration pending until BE2 implementation and table settings are available.
+- User API #6 policy choices are authorized: minimal profile response, DynamoDB-authoritative nickname, user re-entry for invalid initial nickname, and durable/idempotent withdrawal. Share decisions for integration; do not repeatedly request policy approval.
 
 # RecoMate AWS configuration
 
