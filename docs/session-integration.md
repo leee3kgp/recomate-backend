@@ -89,6 +89,6 @@ CodeBuild `recomate-build-dev:70379989-06c3-4836-a9a9-f4c3b31d5dc8`이 성공했
 - 탈퇴 후 기존 토큰의 사용자·세션 접근 차단, 반복 DELETE의 204, 실제 DynamoDB ACTIVE 조건 트랜잭션의 세션 재생성 거절.
 - 유효하지 않은 초기 닉네임에 대한 프로필 조회·장르 저장·세션 생성의 409 NICKNAME_REQUIRED, 유효한 PATCH 후 복구.
 
-추천 결과는 임시 사용자 세션에 테스트용 값을 저장했습니다. 실제 추천 생성 HTTP API는 아직 없으며 그 API나 TMDB·점수 계산을 검증했다는 의미가 아닙니다. Java RecommendationRepository의 소유권·중복·탈퇴 동시성 동작은 위 로컬 테스트로 확인했습니다.
+당시 추천 결과는 임시 사용자 세션에 테스트용 값을 저장했습니다. 이 기록은 추천 생성 API를 구현하기 전의 검증이며, 이후 검증은 [세션 조회·삭제 API](session-query-api.md)를 따릅니다. Java RecommendationRepository의 소유권·중복·탈퇴 동시성 동작은 위 로컬 테스트로 확인했습니다.
 
 성공 검증의 임시 사용자 3명과 세션을 정리했습니다. 캐시 헤더 검사 조건을 바로잡기 전 첫 시도의 임시 사용자 3명도 정리했습니다. 토큰·비밀번호는 저장하거나 출력하지 않았고 최소 탈퇴 TTL 상태만 남습니다. 재검증용 스크립트·비밀값 없는 결과 JSON은 Git에서 제외한 `.gradle/aws-smoke/user6-live.cjs`, `.gradle/deployment/user6-live-report.json`에 있습니다. 이 AWS 검증은 Git 통합 전인 2026-10-28에 수행한 결과이며 이후 main 통합은 위 기준으로 진행했습니다. Git 푸시와 PR 생성·병합은 별도 절차입니다.

@@ -65,7 +65,7 @@ ARM 기반 Mac에서는 amd64 에뮬레이션으로 빌드가 느릴 수 있습�
 
 | 파일 | 목적 |
 | --- | --- |
-| `infra/build.yaml` | 비공개 소스 ZIP 버킷, immutable ECR 저장소, CodeBuild 역할·프로젝트, 암호화된 빌드 로그 |
+| `infra/build.yaml` | 비공개 소스 ZIP 버킷, 최근 이미지 5개를 보관하는 immutable ECR 저장소, CodeBuild 역할·프로젝트, 암호화된 빌드 로그 |
 | `infra/user-api.yaml` | 사용자 테이블, 이전 검증용 테이블 보존, 공유 BE2 테이블 연결, 실행 역할, Lambda, 기존 API Gateway의 사용자·장르·세션·추천 경로와 개발 Stage |
 | `infra/sessions.yaml` | PR #9의 sessionId 기본 키·사용자별 GSI를 사용하는 공유 RecommendationSession 테이블 |
 | `buildspec.yml` | Docker 이미지 빌드, 읽기 전용 컨테이너의 401·CORS 확인, 성공한 이미지만 ECR push |
@@ -77,7 +77,7 @@ ARM 기반 Mac에서는 amd64 에뮬레이션으로 빌드가 느릴 수 있습�
 
 검증 순서는 로컬 cfn-lint, cfn-guard 규칙 검사, CloudFormation 서비스 검사입니다. 2026-10-27에 두 템플릿의 cfn-lint 오류·경고 0개, 선택한 공식 Guard 규칙 위반 0개, 변경 계획의 서비스 검사를 확인한 뒤 개발용 배포를 완료했습니다. 적용한 공식 규칙의 버전·목록은 `infra/validation-tools.json`에 고정했습니다. DynamoDB는 기본 AWS-owned key 암호화를 사용하므로 명시적 KMS 테이블 키를 강제하는 규칙은 이 선택에 적용하지 않았습니다.
 
-기존 Cognito User Pool·앱 클라이언트·Authorizer·jwt-test Stage는 재생성하지 않습니다. 사용자 API 5개에는 기존 Authorizer를 적용하고 OPTIONS만 인증 없이 Lambda로 전달합니다. Gateway가 Lambda보다 먼저 거절하는 401에도 프론트 Origin 헤더가 나오도록 기존 UNAUTHORIZED·ACCESS_DENIED GatewayResponse의 상태 코드·JSON을 보존하고 CORS 헤더를 추가했습니다. 이 두 응답은 기존 공유 API 설정이므로 새 스택에서 소유권을 가져오지 않습니다.
+기존 Cognito User Pool·앱 클라이언트·Authorizer·jwt-test Stage는 재생성하지 않습니다. 사용자 API 5개에는 기존 Authorizer를 적용하고 OPTIONS만 인증 없이 Lambda로 전달합니다. Gateway가 Lambda보다 먼저 돌려주는 오류도 브라우저가 읽을 수 있도록 UNAUTHORIZED·ACCESS_DENIED·DEFAULT_4XX·DEFAULT_5XX GatewayResponse를 `infra/user-api.yaml`에서 관리합니다. 401 상태 코드·JSON은 보존하고, 429·504 등은 공통 오류 형식으로 반환합니다. 응답 헤더는 주소 하나만 지정할 수 있고 본문에 사용자 정보가 없으며 인증은 헤더로만 하므로 `Access-Control-Allow-Origin: *`을 사용합니다. 실제 요청의 허용 주소는 사전 요청에서 Spring이 `AllowedOrigin`으로 검사합니다.
 
 이전 배포는 독립된 validation-sessions 테이블로 탈퇴를 검증했습니다. 이번 변경은 PR #9의 공유 sessionId 테이블과 ACTIVE 조건 트랜잭션을 대상으로 하며, 공유 테이블 생성과 애플리케이션 변경을 함께 검증해야 합니다.
 
@@ -110,7 +110,9 @@ Lambda 배포용 이미지는 단일 아키텍처로 만들고 provenance/SBOM a
 7. API Gateway의 실제 서비스 경로에 Lambda proxy 통합과 기존 Cognito Authorizer를 적용합니다.
 8. Stage를 배포하고 아래 통합 검증을 수행합니다.
 
-이 프로젝트의 로컬 AWS CLI 작업에는 `--profile recomate --region ap-southeast-2`를 명시합니다. 개인 프로필·액세스 키를 이미지나 Lambda에 복사하지 않습니다. Lambda는 실행 역할과 런타임 리전을 사용합니다.
+프론트를 배포할 때는 `AllowedOrigin`에 프론트 주소를 쉼표로 추가합니다. 개발 주소를 지우면 로컬 화면이 차단됩니다. ECR은 최근 이미지 5개만 보관하므로 배포 중인 이미지가 밀려나기 전에 새 이미지를 배포합니다.
+
+이 프로젝트의 로컬 AWS CLI 작업에는 `--profile recomate --region ap-southeast-2`를 명시합니다. `infra/user-api.yaml`에 한글 오류 문구가 있어 Windows에서 템플릿을 파일로 전달할 때는 `AWS_CLI_FILE_ENCODING=UTF-8`을 설정합니다. 개인 프로필·액세스 키를 이미지나 Lambda에 복사하지 않습니다. Lambda는 실행 역할과 런타임 리전을 사용합니다.
 
 ## 배포 검증
 
