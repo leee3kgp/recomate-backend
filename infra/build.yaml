@@ -108,12 +108,14 @@ Resources:
     Metadata:
       com.aws.cloudformation.Context:
         why: Publish a single-platform tested container; immutable tags and digest deployment prevent image replacement.
-        must: [Retain deployed image digests., Restrict Lambda image retrieval to the intended function.]
+        must: [Retain deployed image digests by deploying within the five newest builds., Restrict Lambda image retrieval to the intended function.]
     Properties:
       RepositoryName: !Sub '${AWS::StackName}-api'
       ImageTagMutability: IMMUTABLE
       EncryptionConfiguration: {EncryptionType: AES256}
       ImageScanningConfiguration: {ScanOnPush: true}
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the five newest images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
       RepositoryPolicyText:
         Version: '2012-10-17'
         Statement:
