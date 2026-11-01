@@ -8,9 +8,9 @@
 
 `matchRate` 계산 변경, GatewayResponse 4종의 스택 관리, 여러 `AllowedOrigin`, ECR 보관 규칙을 반영했습니다. 테이블·키·Cognito·TMDB 토큰은 변경하지 않았습니다.
 
-같은 날 `matchRate` 분모를 `min(고른 장르 수, 작품 장르 수)`로 다시 변경해 Lambda 이미지만 교체했습니다. 현재 이미지는 `src-4b49820c8818dfdd`, digest `sha256:14b90f273adcc855e4741c521ff01b782a208291ca9ce7cb76c801e867b1f2cb`입니다. CodeBuild `95f0bc7a-392d-44d5-b015-9347c7d0e11b`의 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개)을 확인했습니다. 변경 계획 `match-rate-src-4b49820c8818dfdd`를 검토 후 사용자 승인으로 적용했고 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 현재 dev 배포 ID는 `jn1oxi`로 유지됩니다.
+같은 날 `matchRate` 분모를 `min(고른 장르 수, 작품 장르 수)`로 다시 변경하고(`src-4b49820c8818dfdd`), 추천 점수의 장르 일치도에 고른 장르 충족률을 반영해 Lambda 이미지만 교체했습니다. 현재 이미지는 `src-9372226e3a7f4f50`, digest `sha256:5e8575ea148752a88d465271f36bb1efd69ca5b35e4b33902a2f5992c727a3ba`입니다. CodeBuild `a442136e-0fd3-484f-b4f5-e92a5a15e3ad`의 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개)을 확인했습니다. 변경 계획 `scorer-src-9372226e3a7f4f50`을 검토 후 사용자 승인으로 적용했고 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 현재 dev 배포 ID는 `jn1oxi`로 유지됩니다.
 
-프론트 빌드와 실제 API로 장르가 같은 경우, 다른 경우, 한 명이 많이 고른 경우와 3인 추천을 실행해 응답을 직접 계산한 값과 비교했고, 3인 추천의 일치율(0.67, 0.5, 0.61)이 결과 그래프와 일치함을 확인했습니다. 검증 세션은 삭제했습니다.
+프론트 빌드와 실제 API로 장르가 같은 경우(일치율 1, 1), 다른 경우, 한 명이 많이 고른 경우, TV 매핑이 없는 장르 조합, 6명이 모두 다른 경우와 3인 추천을 실행해 응답을 직접 계산한 값과 비교했고, 3인 추천의 일치율(0.67, 0.5, 0.61)이 결과 그래프와 일치함을 확인했습니다. 후보는 영화·TV 인기순 첫 페이지이고 TOP 3는 작품별 점수로만 고르므로, 6명의 장르가 모두 다르면 일부 참여자의 일치율이 0일 수 있습니다. 검증 세션은 삭제했습니다.
 
 앞선 배포의 이미지는 `src-d4e2baf18d7739c6`, digest `sha256:21bb2519ff70c775ccd6f76fc283fa06b59ab8f1bd2af046ec8f9c61cb5022df`입니다. CodeBuild `d70662be-4362-4ce7-a508-11c9c331239b`의 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개)을 확인했습니다. 변경 계획 검토 후 사용자 승인으로 적용했고 두 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다.
 
