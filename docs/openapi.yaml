@@ -194,7 +194,8 @@ paths:
         withdrawal removes them with the session. Stored genres must be genre master codes;
         matchedParticipants and analysis indexes must be 1-6. genreScores counts the
         participants who selected each genre. matchRate averages, over the recommended
-        titles, the share of that participant's genres each title has. TMDB failure returns 502 and stores nothing.
+        titles, shared genres divided by the smaller of the participant's and the title's
+        genre counts. TMDB failure returns 502 and stores nothing.
       parameters:
         - in: path
           name: sessionId

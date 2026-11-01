@@ -94,17 +94,19 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
                 .sorted(Comparator.comparingInt(SessionAnalysis.GenreScore::getCount).reversed()).toList();
     }
 
-    /** Match rate averages, over the recommended titles, the share of this participant's genres each title has. */
+    /** Match rate averages, over the recommended titles, each title's genre overlap with this participant. */
     private static SessionAnalysis.ParticipantMatch participantMatch(int index, Set<Genre> selected, List<Scored> top) {
-        double total = top.stream().mapToDouble(scored -> genreShare(selected, scored.content().genres())).sum();
+        double total = top.stream().mapToDouble(scored -> genreOverlap(selected, scored.content().genres())).sum();
         var match = new SessionAnalysis.ParticipantMatch();
         match.setIndex(index);
         match.setMatchRate(top.isEmpty() ? 0 : Math.round(100.0 * total / top.size()) / 100.0);
         return match;
     }
 
-    private static double genreShare(Set<Genre> selected, Set<Genre> genres) {
-        if (selected.isEmpty()) return 0;
-        return (double) selected.stream().filter(genres::contains).count() / selected.size();
+    /** Divides by the smaller set so choosing many genres does not cap the rate below 1. */
+    private static double genreOverlap(Set<Genre> selected, Set<Genre> genres) {
+        int possible = Math.min(selected.size(), genres.size());
+        if (possible == 0) return 0;
+        return (double) selected.stream().filter(genres::contains).count() / possible;
     }
 }
