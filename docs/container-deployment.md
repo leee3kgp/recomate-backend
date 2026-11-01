@@ -4,7 +4,21 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## 일치율·오류 응답 배포 (2026-11-01)
+
+`matchRate` 계산 변경, GatewayResponse 4종의 스택 관리, 여러 `AllowedOrigin`, ECR 보관 규칙을 반영했습니다. 테이블·키·Cognito·TMDB 토큰은 변경하지 않았습니다.
+
+같은 날 `matchRate` 분모를 `min(고른 장르 수, 작품 장르 수)`로 다시 변경하고(`src-4b49820c8818dfdd`), 추천 점수의 장르 일치도에 고른 장르 충족률을 반영해 Lambda 이미지만 교체했습니다. 현재 이미지는 `src-9372226e3a7f4f50`, digest `sha256:5e8575ea148752a88d465271f36bb1efd69ca5b35e4b33902a2f5992c727a3ba`입니다. CodeBuild `a442136e-0fd3-484f-b4f5-e92a5a15e3ad`의 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개)을 확인했습니다. 변경 계획 `scorer-src-9372226e3a7f4f50`을 검토 후 사용자 승인으로 적용했고 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 현재 dev 배포 ID는 `jn1oxi`로 유지됩니다.
+
+프론트 빌드와 실제 API로 장르가 같은 경우(일치율 1, 1), 다른 경우, 한 명이 많이 고른 경우, TV 매핑이 없는 장르 조합, 6명이 모두 다른 경우와 3인 추천을 실행해 응답을 직접 계산한 값과 비교했고, 3인 추천의 일치율(0.67, 0.5, 0.61)이 결과 그래프와 일치함을 확인했습니다. 후보는 영화·TV 인기순 첫 페이지이고 TOP 3는 작품별 점수로만 고르므로, 6명의 장르가 모두 다르면 일부 참여자의 일치율이 0일 수 있습니다. 검증 세션은 삭제했습니다.
+
+앞선 배포의 이미지는 `src-d4e2baf18d7739c6`, digest `sha256:21bb2519ff70c775ccd6f76fc283fa06b59ab8f1bd2af046ec8f9c61cb5022df`입니다. CodeBuild `d70662be-4362-4ce7-a508-11c9c331239b`의 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개)을 확인했습니다. 변경 계획 검토 후 사용자 승인으로 적용했고 두 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다.
+
+다른 주소의 401 응답 CORS, 등록되지 않은 주소의 사전 요청 403, 사용자·장르·세션 회귀를 실제 호출로 확인했습니다. 429 응답은 재현하지 않았습니다.
+
 ## 세션 삭제·추천 경로 배포 (2026-10-30)
+
+이 절은 당시 기록입니다. 현재 이미지는 위 배포 결과를 따릅니다.
 
 기존 스택에 `DELETE /api/sessions/{sessionId}`, `POST /api/sessions/{sessionId}/recommendations`와 추천 경로 OPTIONS를 추가하고 `ApiDeploymentSessionCommandsV1` 스냅샷을 dev Stage에 반영했습니다. 실행 역할에는 공유 세션 테이블의 `dynamodb:DeleteItem`만 추가했습니다. 테이블·키·Cognito 리소스는 변경하지 않았습니다.
 
@@ -65,7 +79,7 @@ ARM 기반 Mac에서는 amd64 에뮬레이션으로 빌드가 느릴 수 있습�
 
 | 파일 | 목적 |
 | --- | --- |
-| `infra/build.yaml` | 비공개 소스 ZIP 버킷, immutable ECR 저장소, CodeBuild 역할·프로젝트, 암호화된 빌드 로그 |
+| `infra/build.yaml` | 비공개 소스 ZIP 버킷, 최근 이미지 5개를 보관하는 immutable ECR 저장소, CodeBuild 역할·프로젝트, 암호화된 빌드 로그 |
 | `infra/user-api.yaml` | 사용자 테이블, 이전 검증용 테이블 보존, 공유 BE2 테이블 연결, 실행 역할, Lambda, 기존 API Gateway의 사용자·장르·세션·추천 경로와 개발 Stage |
 | `infra/sessions.yaml` | PR #9의 sessionId 기본 키·사용자별 GSI를 사용하는 공유 RecommendationSession 테이블 |
 | `buildspec.yml` | Docker 이미지 빌드, 읽기 전용 컨테이너의 401·CORS 확인, 성공한 이미지만 ECR push |
@@ -77,7 +91,7 @@ ARM 기반 Mac에서는 amd64 에뮬레이션으로 빌드가 느릴 수 있습�
 
 검증 순서는 로컬 cfn-lint, cfn-guard 규칙 검사, CloudFormation 서비스 검사입니다. 2026-10-27에 두 템플릿의 cfn-lint 오류·경고 0개, 선택한 공식 Guard 규칙 위반 0개, 변경 계획의 서비스 검사를 확인한 뒤 개발용 배포를 완료했습니다. 적용한 공식 규칙의 버전·목록은 `infra/validation-tools.json`에 고정했습니다. DynamoDB는 기본 AWS-owned key 암호화를 사용하므로 명시적 KMS 테이블 키를 강제하는 규칙은 이 선택에 적용하지 않았습니다.
 
-기존 Cognito User Pool·앱 클라이언트·Authorizer·jwt-test Stage는 재생성하지 않습니다. 사용자 API 5개에는 기존 Authorizer를 적용하고 OPTIONS만 인증 없이 Lambda로 전달합니다. Gateway가 Lambda보다 먼저 거절하는 401에도 프론트 Origin 헤더가 나오도록 기존 UNAUTHORIZED·ACCESS_DENIED GatewayResponse의 상태 코드·JSON을 보존하고 CORS 헤더를 추가했습니다. 이 두 응답은 기존 공유 API 설정이므로 새 스택에서 소유권을 가져오지 않습니다.
+기존 Cognito User Pool·앱 클라이언트·Authorizer·jwt-test Stage는 재생성하지 않습니다. 사용자 API 5개에는 기존 Authorizer를 적용하고 OPTIONS만 인증 없이 Lambda로 전달합니다. Gateway가 Lambda보다 먼저 돌려주는 오류도 브라우저가 읽을 수 있도록 UNAUTHORIZED·ACCESS_DENIED·DEFAULT_4XX·DEFAULT_5XX GatewayResponse를 `infra/user-api.yaml`에서 관리합니다. 401 상태 코드·JSON은 보존하고, 429·504 등은 공통 오류 형식으로 반환합니다. 응답 헤더는 주소 하나만 지정할 수 있고 본문에 사용자 정보가 없으며 인증은 헤더로만 하므로 `Access-Control-Allow-Origin: *`을 사용합니다. 실제 요청의 허용 주소는 사전 요청에서 Spring이 `AllowedOrigin`으로 검사합니다.
 
 이전 배포는 독립된 validation-sessions 테이블로 탈퇴를 검증했습니다. 이번 변경은 PR #9의 공유 sessionId 테이블과 ACTIVE 조건 트랜잭션을 대상으로 하며, 공유 테이블 생성과 애플리케이션 변경을 함께 검증해야 합니다.
 
@@ -110,7 +124,9 @@ Lambda 배포용 이미지는 단일 아키텍처로 만들고 provenance/SBOM a
 7. API Gateway의 실제 서비스 경로에 Lambda proxy 통합과 기존 Cognito Authorizer를 적용합니다.
 8. Stage를 배포하고 아래 통합 검증을 수행합니다.
 
-이 프로젝트의 로컬 AWS CLI 작업에는 `--profile recomate --region ap-southeast-2`를 명시합니다. 개인 프로필·액세스 키를 이미지나 Lambda에 복사하지 않습니다. Lambda는 실행 역할과 런타임 리전을 사용합니다.
+프론트를 배포할 때는 `AllowedOrigin`에 프론트 주소를 쉼표로 추가합니다. 개발 주소를 지우면 로컬 화면이 차단됩니다. ECR은 최근 이미지 5개만 보관하므로 배포 중인 이미지가 밀려나기 전에 새 이미지를 배포합니다.
+
+이 프로젝트의 로컬 AWS CLI 작업에는 `--profile recomate --region ap-southeast-2`를 명시합니다. `infra/user-api.yaml`에 한글 오류 문구가 있어 Windows에서 템플릿을 파일로 전달할 때는 `AWS_CLI_FILE_ENCODING=UTF-8`을 설정합니다. 개인 프로필·액세스 키를 이미지나 Lambda에 복사하지 않습니다. Lambda는 실행 역할과 런타임 리전을 사용합니다.
 
 ## 배포 검증
 

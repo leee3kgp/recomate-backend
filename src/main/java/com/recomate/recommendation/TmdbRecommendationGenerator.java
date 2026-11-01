@@ -79,7 +79,7 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
         var analysis = new SessionAnalysis();
         analysis.setGenreScores(genreScores(participants.values()));
         List<SessionAnalysis.ParticipantMatch> matches = new ArrayList<>();
-        participants.keySet().forEach(index -> matches.add(participantMatch(index, top)));
+        participants.forEach((index, selected) -> matches.add(participantMatch(index, selected, top)));
         analysis.setParticipantMatch(matches);
         return analysis;
     }
@@ -94,12 +94,19 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
                 .sorted(Comparator.comparingInt(SessionAnalysis.GenreScore::getCount).reversed()).toList();
     }
 
-    /** Match rate is the share of the recommended titles that fit this participant. */
-    private static SessionAnalysis.ParticipantMatch participantMatch(int index, List<Scored> top) {
-        long matched = top.stream().filter(scored -> scored.matchedParticipants().contains(index)).count();
+    /** Match rate averages, over the recommended titles, each title's genre overlap with this participant. */
+    private static SessionAnalysis.ParticipantMatch participantMatch(int index, Set<Genre> selected, List<Scored> top) {
+        double total = top.stream().mapToDouble(scored -> genreOverlap(selected, scored.content().genres())).sum();
         var match = new SessionAnalysis.ParticipantMatch();
         match.setIndex(index);
-        match.setMatchRate(top.isEmpty() ? 0 : Math.round(100.0 * matched / top.size()) / 100.0);
+        match.setMatchRate(top.isEmpty() ? 0 : Math.round(100.0 * total / top.size()) / 100.0);
         return match;
+    }
+
+    /** Divides by the smaller set so choosing many genres does not cap the rate below 1. */
+    private static double genreOverlap(Set<Genre> selected, Set<Genre> genres) {
+        int possible = Math.min(selected.size(), genres.size());
+        if (possible == 0) return 0;
+        return (double) selected.stream().filter(genres::contains).count() / possible;
     }
 }

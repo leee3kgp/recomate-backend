@@ -52,8 +52,9 @@ Parameters:
     AllowedPattern: '[a-zA-Z0-9_-]+'
   AllowedOrigin:
     Type: String
-    Default: http://localhost:5173
-    AllowedPattern: 'https?://[a-zA-Z0-9.-]+(:[0-9]{1,5})?'
+    Default: http://localhost:5173,http://127.0.0.1:5173
+    AllowedPattern: 'https?://[a-zA-Z0-9.-]+(:[0-9]{1,5})?(,https?://[a-zA-Z0-9.-]+(:[0-9]{1,5})?)*'
+    Description: Comma-separated browser origins; keep the local origins when adding a deployed frontend.
   TmdbAccessToken:
     Type: String
     NoEcho: true
@@ -521,21 +522,67 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/sessions/*'
-  ApiDeploymentSessionCommandsV1:
+  UnauthorizedResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Let the frontend read errors API Gateway returns before Lambda, on any deployed origin.
+        must: [Keep the shared UNAUTHORIZED body., Allow any origin here only because these bodies hold no user data and credentials are header based., Keep preflight origin checks in Spring.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResponseType: UNAUTHORIZED
+      StatusCode: '401'
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Content-Type: "'application/json'"
+      ResponseTemplates:
+        application/json: '{"error":{"code":"UNAUTHORIZED","message":"인증이 필요합니다."}}'
+  AccessDeniedResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResponseType: ACCESS_DENIED
+      StatusCode: '401'
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Content-Type: "'application/json'"
+      ResponseTemplates:
+        application/json: '{"error":{"code":"UNAUTHORIZED","message":"인증이 필요합니다."}}'
+  Default4xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Content-Type: "'application/json'"
+      ResponseTemplates:
+        application/json: '{"error":{"code":"$context.error.responseType","message":"요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."}}'
+  Default5xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Content-Type: "'application/json'"
+      ResponseTemplates:
+        application/json: '{"error":{"code":"$context.error.responseType","message":"요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."}}'
+  ApiDeploymentGatewayResponsesV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish session deletion and recommendation generation alongside all existing methods.
-        must: [Wait for all methods., Change the logical ID for future route changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions]
+        why: Publish stack-managed error responses alongside all existing methods.
+        must: [Wait for all methods and gateway responses., Change the logical ID for future route or response changes.]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate session commands with existing session, user and genre APIs
+      Description: RecoMate APIs with stack-managed gateway error responses
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentSessionCommandsV1
+      DeploymentId: !Ref ApiDeploymentGatewayResponsesV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'

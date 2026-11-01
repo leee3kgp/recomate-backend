@@ -31,6 +31,7 @@ info:
     TMDB, recommendation generation and FE browser integration were not part of these checks.
     Session deletion, TMDB-backed recommendation generation and existing regression paths
     passed 146 live checkpoints on 2026-10-30. FE browser integration was not part of these checks.
+    The browser flow was verified separately on 2026-10-31 against the development API (#16).
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
@@ -192,8 +193,9 @@ paths:
         analysis are stored together in the session item with the ACTIVE transaction, and
         withdrawal removes them with the session. Stored genres must be genre master codes;
         matchedParticipants and analysis indexes must be 1-6. genreScores counts the
-        participants who selected each genre. matchRate is the share of the recommended
-        titles matching that participant. TMDB failure returns 502 and stores nothing.
+        participants who selected each genre. matchRate averages, over the recommended
+        titles, shared genres divided by the smaller of the participant's and the title's
+        genre counts. TMDB failure returns 502 and stores nothing.
       parameters:
         - in: path
           name: sessionId

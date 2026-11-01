@@ -34,6 +34,38 @@ class RecommendationScorerTest {
     }
 
     @Test
+    void contentWithMoreChosenGenresBeatsHigherRatedPartialMatch() {
+        Map<Integer, Set<Genre>> sameTaste =
+                Map.of(1, Set.of(Genre.ACTION, Genre.SF), 2, Set.of(Genre.ACTION, Genre.SF));
+        TmdbContent both = content(1, 7.0, 20, Genre.ACTION, Genre.SF);
+        TmdbContent partial = content(2, 8.5, 80, Genre.ACTION, Genre.CRIME);
+        TmdbContent single = content(3, 8.5, 80, Genre.ACTION);
+
+        List<Scored> result = scorer.top(sameTaste, List.of(partial, single, both), 3);
+
+        assertEquals(1L, result.get(0).content().id());
+    }
+
+    @Test
+    void contentSharedByEveryoneBeatsContentFullyMatchingOne() {
+        Map<Integer, Set<Genre>> differentTaste =
+                Map.of(1, Set.of(Genre.ACTION, Genre.SF), 2, Set.of(Genre.ROMANCE, Genre.COMEDY));
+        TmdbContent shared = content(1, 6.0, 50, Genre.ACTION, Genre.COMEDY);
+        TmdbContent oneOnly = content(2, 8.0, 50, Genre.ACTION, Genre.SF);
+
+        assertEquals(1L, scorer.top(differentTaste, List.of(oneOnly, shared), 3).get(0).content().id());
+    }
+
+    @Test
+    void genreMatchAveragesCoverageAndChosenGenreShare() {
+        Map<Integer, Set<Genre>> group = Map.of(1, Set.of(Genre.ACTION, Genre.SF), 2, Set.of(Genre.ACTION));
+
+        Scored scored = scorer.top(group, List.of(content(1, 8.0, 50, Genre.ACTION)), 1).get(0);
+
+        assertEquals(87.5, scored.score());
+    }
+
+    @Test
     void excludesContentMatchingNobody() {
         TmdbContent none = content(3, 9.0, 80, Genre.HORROR);
 
