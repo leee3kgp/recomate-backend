@@ -53,8 +53,26 @@ class TmdbRecommendationGeneratorTest {
         assertEquals(List.of(1), second.getMatchedParticipants());
         assertEquals("SF", result.analysis().getGenreScores().get(0).getGenre());
         assertEquals(2, result.analysis().getGenreScores().get(0).getCount());
-        assertEquals(1.0, result.analysis().getParticipantMatch().get(0).getMatchRate());
+        assertEquals(0.75, result.analysis().getParticipantMatch().get(0).getMatchRate());
         assertEquals(0.5, result.analysis().getParticipantMatch().get(1).getMatchRate());
+    }
+
+    @Test
+    void matchRateAveragesTheShareOfEachParticipantsGenresAcrossTitles() {
+        var session = new RecommendationSession();
+        session.setParticipants(List.of(new Participant(1, List.of("ACTION", "SF")),
+                new Participant(2, List.of("COMEDY", "DRAMA")),
+                new Participant(3, List.of("ACTION", "COMEDY", "ANIMATION"))));
+        TmdbClient tmdb = (type, genres) -> type == ContentType.MOVIE ? List.of(
+                content(1, type, Genre.ACTION, Genre.DRAMA),
+                content(2, type, Genre.ACTION, Genre.DRAMA, Genre.SF, Genre.FANTASY, Genre.CRIME),
+                content(3, type, Genre.ACTION, Genre.COMEDY)) : List.of();
+
+        var matches = new TmdbRecommendationGenerator(tmdb, scorer).generate(session).analysis().getParticipantMatch();
+
+        assertEquals(0.67, matches.get(0).getMatchRate());
+        assertEquals(0.5, matches.get(1).getMatchRate());
+        assertEquals(0.44, matches.get(2).getMatchRate());
     }
 
     @Test

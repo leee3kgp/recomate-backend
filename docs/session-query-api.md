@@ -83,7 +83,7 @@ POST /api/sessions/{sessionId}/recommendations
 
 저장 시 genres는 장르 마스터 코드만, matchedParticipants와 analysis의 index는 1~6만 허용합니다. analysis의 count는 0 이상, matchRate는 0~1입니다. matchedParticipants는 세션 참여자에서 계산하므로 실제 인원수를 넘지 않습니다. 기존 `saveRecommendations` 3개 인자 메서드는 analysis 없이 저장하도록 유지합니다.
 
-`TmdbRecommendationGenerator`가 #13의 TMDB 조회와 점수 계산을 연결합니다. 영화와 TV 후보를 조회해 상위 3개를 고르고, `genreScores`는 장르별 선택 참여자 수, `matchRate`는 추천 결과 중 해당 참여자와 장르가 일치하는 비율로 계산합니다. TMDB 호출 실패는 `502 UPSTREAM_ERROR`이며 저장하지 않습니다. 후보가 없으면 빈 결과를 반환하고 다시 생성할 수 있습니다.
+`TmdbRecommendationGenerator`가 #13의 TMDB 조회와 점수 계산을 연결합니다. 영화와 TV 후보를 조회해 상위 3개를 고르고, `genreScores`는 장르별 선택 참여자 수, `matchRate`는 추천 작품마다 참여자가 고른 장르 중 작품에 담긴 비율을 구해 평균한 값으로 계산합니다. TMDB 호출 실패는 `502 UPSTREAM_ERROR`이며 저장하지 않습니다. 후보가 없으면 빈 결과를 반환하고 다시 생성할 수 있습니다.
 
 Lambda에는 `TMDB_ACCESS_TOKEN`이 필요합니다. 값은 저장소에 넣지 않고 배포 시 `TmdbAccessToken` NoEcho 파라미터로 전달합니다.
 
