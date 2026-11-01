@@ -4,7 +4,17 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## 일치율·오류 응답 배포 (2026-11-01)
+
+`matchRate` 계산 변경, GatewayResponse 4종의 스택 관리, 여러 `AllowedOrigin`, ECR 보관 규칙을 반영했습니다. 테이블·키·Cognito·TMDB 토큰은 변경하지 않았습니다.
+
+현재 이미지는 `src-d4e2baf18d7739c6`, digest `sha256:21bb2519ff70c775ccd6f76fc283fa06b59ab8f1bd2af046ec8f9c61cb5022df`입니다. CodeBuild `d70662be-4362-4ce7-a508-11c9c331239b`의 빌드·컨테이너 검사와 ECR 기본 스캔(발견 항목 0개)을 확인했습니다. 변경 계획 검토 후 사용자 승인으로 적용했고 두 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 현재 dev 배포 ID는 `jn1oxi`입니다.
+
+프론트 main 빌드에서 추천 흐름과 일치율(0.67, 0.5, 0.44)을 확인했고, 다른 주소의 401 응답 CORS, 등록되지 않은 주소의 사전 요청 403, 사용자·장르·세션 회귀를 실제 호출로 확인했습니다. 429 응답은 재현하지 않았습니다.
+
 ## 세션 삭제·추천 경로 배포 (2026-10-30)
+
+이 절은 당시 기록입니다. 현재 이미지는 위 배포 결과를 따릅니다.
 
 기존 스택에 `DELETE /api/sessions/{sessionId}`, `POST /api/sessions/{sessionId}/recommendations`와 추천 경로 OPTIONS를 추가하고 `ApiDeploymentSessionCommandsV1` 스냅샷을 dev Stage에 반영했습니다. 실행 역할에는 공유 세션 테이블의 `dynamodb:DeleteItem`만 추가했습니다. 테이블·키·Cognito 리소스는 변경하지 않았습니다.
 
