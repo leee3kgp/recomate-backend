@@ -1,0 +1,6 @@
+# Dependencies for scripts/live-check.py (deployment checks only; not part of the application build).
+# botocore[crt] is required for credentials created by `aws login`.
+boto3==1.43.123
+botocore[crt]==1.43.123
+pycognito==2024.5.1
+requests==2.34.2
