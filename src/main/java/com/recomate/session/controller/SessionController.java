@@ -2,10 +2,12 @@ package com.recomate.session.controller;
 
 import com.recomate.session.domain.RecommendationSession;
 import com.recomate.session.dto.CreateSessionRequest;
+import com.recomate.session.dto.ExclusionRequest;
 import com.recomate.session.dto.RecommendationResponse;
 import com.recomate.session.dto.SessionDetailResponse;
 import com.recomate.session.dto.SessionListResponse;
 import com.recomate.session.dto.SessionResponse;
+import com.recomate.session.service.ExclusionService;
 import com.recomate.session.service.RecommendationService;
 import com.recomate.session.service.SessionQueryService;
 import com.recomate.session.service.SessionService;
@@ -31,12 +33,14 @@ public class SessionController {
     private final SessionService service;
     private final SessionQueryService queries;
     private final RecommendationService recommendations;
+    private final ExclusionService exclusions;
 
     public SessionController(SessionService service, SessionQueryService queries,
-            RecommendationService recommendations) {
+            RecommendationService recommendations, ExclusionService exclusions) {
         this.service = service;
         this.queries = queries;
         this.recommendations = recommendations;
+        this.exclusions = exclusions;
     }
 
     @GetMapping
@@ -70,5 +74,13 @@ public class SessionController {
     public ResponseEntity<RecommendationResponse> recommend(@AuthenticationPrincipal Jwt jwt,
             @PathVariable String sessionId) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(recommendations.create(jwt.getSubject(), sessionId));
+    }
+
+    /** "이미 봤어요": excludes one current title and returns the refreshed results. */
+    @PostMapping("/{sessionId}/exclusions")
+    public ResponseEntity<RecommendationResponse> exclude(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable String sessionId, @Valid @RequestBody ExclusionRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(exclusions.exclude(jwt.getSubject(), sessionId, request));
     }
 }

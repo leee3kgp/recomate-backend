@@ -7,6 +7,7 @@ import com.recomate.session.domain.SessionAnalysis;
 import com.recomate.session.dto.CreateSessionRequest;
 import com.recomate.session.dto.ParticipantRequest;
 import com.recomate.session.repository.DynamoSessionRepository;
+import com.recomate.session.repository.RecommendationRepository;
 import com.recomate.session.service.SessionService;
 import com.recomate.user.infrastructure.DynamoDbSessionDataEraser;
 import com.recomate.user.infrastructure.DynamoDbUserRepository;
@@ -181,6 +182,65 @@ class DynamoDbLocalTests {
         assertThatThrownBy(() -> repository.saveRecommendations(owner, pending.getSessionId(), List.of(recommendation()), new SessionAnalysis()))
                 .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(401));
         assertThat(storedSession(pending.getSessionId())).doesNotContainKey("analysis");
+    }
+
+    @Test
+    void generationStoresCandidatesAndExclusionsAdvanceTheVersion() {
+        String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        users.createIfAbsent(seed(other, "other"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var created = session(owner);
+        repository.save(created);
+        assertThat(storedSession(created.getSessionId())).doesNotContainKeys("candidates", "excluded", "version");
+        // No TMDB titles: stored as empty and still retryable, as before #18.
+        repository.saveRecommendations(owner, created.getSessionId(), List.of(), null, List.of());
+        assertThat(storedSession(created.getSessionId())).doesNotContainKey("version");
+        var candidate = recommendation(); candidate.setRank(null); candidate.setTmdbId(604L); candidate.setGenres(List.of("SF"));
+        repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation()), null, List.of(candidate));
+        var generated = repository.findById(created.getSessionId()).orElseThrow();
+        assertThat(generated.getVersion()).isEqualTo(1L);
+        assertThat(generated.getCandidates()).extracting(Recommendation::getTmdbId).containsExactly(604L);
+
+        var promoted = recommendation(); promoted.setTmdbId(604L);
+        var exclusion = new RecommendationRepository.Exclusion(List.of(promoted), new SessionAnalysis(), List.of(), List.of("movie:603"));
+        assertThat(repository.saveExclusion(other, created.getSessionId(), 1L, exclusion)).isFalse();
+        assertThat(repository.saveExclusion(owner, created.getSessionId(), 1L, exclusion)).isTrue();
+        // A second writer that read version 1 loses and must re-read.
+        assertThat(repository.saveExclusion(owner, created.getSessionId(), 1L, exclusion)).isFalse();
+        var stored = repository.findById(created.getSessionId()).orElseThrow();
+        assertThat(stored.getVersion()).isEqualTo(2L);
+        assertThat(stored.getRecommendations()).extracting(Recommendation::getTmdbId).containsExactly(604L);
+        assertThat(stored.getCandidates()).isEmpty();
+        assertThat(stored.getExcluded()).containsExactly("movie:603");
+
+        var emptied = new RecommendationRepository.Exclusion(List.of(), new SessionAnalysis(), List.of(), List.of("movie:603", "movie:604"));
+        assertThat(repository.saveExclusion(owner, created.getSessionId(), 2L, emptied)).isTrue();
+        assertThat(storedSession(created.getSessionId()).get("recommendations").l()).isEmpty();
+        assertThatThrownBy(() -> repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation())))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.code()).isEqualTo("RECOMMENDATION_EXISTS"));
+    }
+
+    @Test
+    void legacyResultsWithoutVersionCanBeExcludedOnceAndNotDuringWithdrawal() {
+        String owner = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var legacy = session(owner);
+        legacy.setRecommendations(List.of(recommendation()));
+        repository.save(legacy);
+        var exclusion = new RecommendationRepository.Exclusion(List.of(), new SessionAnalysis(), List.of(), List.of("movie:603"));
+        assertThat(repository.saveExclusion(owner, legacy.getSessionId(), null, exclusion)).isTrue();
+        assertThat(repository.saveExclusion(owner, legacy.getSessionId(), null, exclusion)).isFalse();
+        assertThat(repository.findById(legacy.getSessionId()).orElseThrow().getVersion()).isEqualTo(1L);
+
+        var pending = session(owner);
+        pending.setRecommendations(List.of(recommendation()));
+        repository.save(pending);
+        users.beginDeletion(owner);
+        assertThatThrownBy(() -> repository.saveExclusion(owner, pending.getSessionId(), null, exclusion))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(401));
+        assertThat(storedSession(pending.getSessionId())).doesNotContainKey("excluded");
     }
 
     @Test

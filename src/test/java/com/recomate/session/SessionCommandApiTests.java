@@ -36,6 +36,8 @@ class SessionCommandApiTests {
     private static final String OWNER = "owner-sub", OTHER = "other-sub";
     private static final String ID = "01234567-89ab-4cde-8fab-0123456789ab";
     private static final String RECOMMENDATIONS = "/api/sessions/" + ID + "/recommendations";
+    private static final String EXCLUSIONS = "/api/sessions/" + ID + "/exclusions";
+    private static final String EXCLUSION_BODY = "{\"tmdbId\":603,\"mediaType\":\"movie\"}";
     @Autowired MockMvc mvc;
     @MockitoBean UserRepository users;
     @MockitoBean IdentityDirectory identities;
@@ -88,18 +90,21 @@ class SessionCommandApiTests {
     @EnumSource(value = UserRecord.Status.class, names = {"DELETING", "DELETED"})
     void withdrawnUsersCannotDeleteOrGenerate(UserRecord.Status state) throws Exception {
         when(users.find(OWNER)).thenReturn(Optional.of(new UserRecord(OWNER, null, null, List.of(), state, null)));
-        for (var request : List.of(delete("/api/sessions/" + ID), post(RECOMMENDATIONS))) {
+        for (var request : List.of(delete("/api/sessions/" + ID), post(RECOMMENDATIONS),
+                post(EXCLUSIONS).contentType("application/json").content(EXCLUSION_BODY))) {
             mvc.perform(request.with(jwt().jwt(t -> t.subject(OWNER)))).andExpect(status().isUnauthorized());
         }
         verifyNoInteractions(sessions, results, generator);
     }
 
     @Test
-    void bothRoutesRequireAuthenticationAndAllowPreflight() throws Exception {
-        for (var request : List.of(delete("/api/sessions/" + ID), post(RECOMMENDATIONS))) {
+    void commandRoutesRequireAuthenticationAndAllowPreflight() throws Exception {
+        for (var request : List.of(delete("/api/sessions/" + ID), post(RECOMMENDATIONS),
+                post(EXCLUSIONS).contentType("application/json").content(EXCLUSION_BODY))) {
             mvc.perform(request).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("UNAUTHORIZED"));
         }
-        for (var entry : List.of(List.of("/api/sessions/" + ID, "DELETE"), List.of(RECOMMENDATIONS, "POST"))) {
+        for (var entry : List.of(List.of("/api/sessions/" + ID, "DELETE"), List.of(RECOMMENDATIONS, "POST"),
+                List.of(EXCLUSIONS, "POST"))) {
             mvc.perform(options(entry.get(0)).header("Origin", "http://localhost:5173")
                             .header("Access-Control-Request-Method", entry.get(1))
                             .header("Access-Control-Request-Headers", "authorization"))
@@ -114,12 +119,55 @@ class SessionCommandApiTests {
         var score = new SessionAnalysis.GenreScore(); score.setGenre("SF"); score.setCount(2);
         var analysis = new SessionAnalysis(); analysis.setGenreScores(List.of(score));
         var recommendations = List.of(recommendation());
-        when(generator.generate(session)).thenReturn(new RecommendationGenerator.Result(recommendations, analysis));
+        var candidate = recommendation(); candidate.setRank(null); candidate.setTmdbId(604L);
+        when(generator.generate(session)).thenReturn(
+                new RecommendationGenerator.Result(recommendations, analysis, List.of(candidate)));
         mvc.perform(post(RECOMMENDATIONS).with(jwt().jwt(t -> t.subject(OWNER))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.sessionId").value(ID))
                 .andExpect(jsonPath("$.recommendations[0].title").value("매트릭스"))
-                .andExpect(jsonPath("$.analysis.genreScores[0].count").value(2));
-        verify(results).saveRecommendations(OWNER, ID, recommendations, analysis);
+                .andExpect(jsonPath("$.analysis.genreScores[0].count").value(2))
+                .andExpect(jsonPath("$.candidates").doesNotExist());
+        verify(results).saveRecommendations(OWNER, ID, recommendations, analysis, List.of(candidate));
+    }
+
+    @Test
+    void sessionsThatAlreadyGeneratedCannotRegenerateAfterExcludingEverything() throws Exception {
+        var session = session(); session.setVersion(3L);
+        when(sessions.findById(ID)).thenReturn(Optional.of(session));
+        mvc.perform(post(RECOMMENDATIONS).with(jwt().jwt(t -> t.subject(OWNER))))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("RECOMMENDATION_EXISTS"));
+        verifyNoInteractions(generator, results);
+    }
+
+    @Test
+    void exclusionReturnsRefreshedResultsWithoutInternalState() throws Exception {
+        var session = session(); session.setVersion(1L);
+        var shown = recommendation();
+        var next = recommendation(); next.setRank(null); next.setTmdbId(604L); next.setTitle("매트릭스 2");
+        session.setRecommendations(List.of(shown)); session.setCandidates(List.of(next));
+        when(sessions.findById(ID)).thenReturn(Optional.of(session));
+        when(generator.analyze(any(), anyList())).thenReturn(new SessionAnalysis());
+        when(results.saveExclusion(eq(OWNER), eq(ID), eq(1L), any())).thenReturn(true);
+        mvc.perform(post(EXCLUSIONS).with(jwt().jwt(t -> t.subject(OWNER))).contentType("application/json")
+                        .content("{\"tmdbId\":603,\"mediaType\":\"movie\"}"))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.sessionId").value(ID))
+                .andExpect(jsonPath("$.recommendations.length()").value(1))
+                .andExpect(jsonPath("$.recommendations[0].rank").value(1))
+                .andExpect(jsonPath("$.recommendations[0].title").value("매트릭스 2"))
+                .andExpect(jsonPath("$.candidates").doesNotExist()).andExpect(jsonPath("$.excluded").doesNotExist());
+        verifyNoMoreInteractions(ignoreStubs(generator));
+        verify(generator, never()).generate(any());
+    }
+
+    @Test
+    void malformedExclusionBodiesAreRejectedBeforeStorage() throws Exception {
+        for (String body : List.of("", "{}", "{\"tmdbId\":603}", "{\"tmdbId\":0,\"mediaType\":\"movie\"}",
+                "{\"tmdbId\":603,\"mediaType\":\"MOVIE\"}", "{\"tmdbId\":\"abc\",\"mediaType\":\"tv\"}")) {
+            mvc.perform(post(EXCLUSIONS).with(jwt().jwt(t -> t.subject(OWNER))).contentType("application/json").content(body))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        }
+        verifyNoInteractions(sessions, results, generator);
     }
 
     @Test

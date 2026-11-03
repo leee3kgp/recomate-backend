@@ -26,6 +26,9 @@ public class ApiException extends RuntimeException {
     public static ApiException recommendationExists() {
         return new ApiException(409, "RECOMMENDATION_EXISTS", "이미 추천 결과가 있습니다.");
     }
+    public static ApiException concurrentUpdate() {
+        return new ApiException(409, "CONCURRENT_UPDATE", "다른 요청과 동시에 처리되었습니다. 다시 시도해주세요.");
+    }
     public static ApiException upstream() {
         return new ApiException(502, "UPSTREAM_ERROR", "외부 콘텐츠 서비스를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
     }
