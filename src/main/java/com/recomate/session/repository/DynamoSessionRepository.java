@@ -22,6 +22,7 @@ import software.amazon.awssdk.services.dynamodb.model.*;
 public class DynamoSessionRepository implements SessionRepository, RecommendationRepository {
     private static final TableSchema<RecommendationSession> SCHEMA = TableSchema.fromBean(RecommendationSession.class);
     private static final int MAX_PARTICIPANTS = 6;
+    private static final int MAX_CANDIDATES = 20;
     private final DynamoDbClient db;
     private final String sessionsTable;
     private final String usersTable;
@@ -87,25 +88,34 @@ public class DynamoSessionRepository implements SessionRepository, Recommendatio
 
     @Override
     public void saveRecommendations(String userId, String sessionId, List<Recommendation> recommendations,
-            SessionAnalysis analysis) {
+            SessionAnalysis analysis, List<Recommendation> candidates) {
         validateRecommendations(recommendations);
         validateAnalysis(analysis);
+        validateCandidates(candidates);
         var values = new RecommendationSession();
         values.setRecommendations(recommendations);
         values.setAnalysis(analysis);
+        values.setCandidates(candidates);
         var stored = SCHEMA.itemToMap(values, true);
-        var names = new HashMap<>(Map.of("#results", "recommendations", "#owner", "userId"));
+        var names = new HashMap<>(Map.of("#results", "recommendations", "#owner", "userId",
+                "#candidates", "candidates", "#version", "version"));
         var attributes = new HashMap<>(Map.of(":owner", text(userId), ":empty", AttributeValue.builder().n("0").build(),
-                ":results", stored.get("recommendations")));
-        String assignments = "SET #results = :results";
+                ":results", stored.get("recommendations"), ":candidates", stored.get("candidates")));
+        String assignments = "SET #results = :results, #candidates = :candidates";
+        // An empty TMDB result stays retryable; only stored titles mark the session as generated.
+        if (!recommendations.isEmpty()) {
+            assignments += ", #version = :first";
+            attributes.put(":first", AttributeValue.builder().n("1").build());
+        }
         if (analysis != null) {
             assignments += ", #analysis = :analysis";
             names.put("#analysis", "analysis");
             attributes.put(":analysis", stored.get("analysis"));
         }
+        // version marks "generated with titles": excluding every title must not reopen paid generation.
         var update = Update.builder().tableName(sessionsTable).key(key(sessionId))
                 .updateExpression(assignments)
-                .conditionExpression("attribute_exists(sessionId) AND #owner = :owner AND "
+                .conditionExpression("attribute_exists(sessionId) AND #owner = :owner AND attribute_not_exists(#version) AND "
                         + "(attribute_not_exists(#results) OR size(#results) = :empty)")
                 .expressionAttributeNames(names).expressionAttributeValues(attributes).build();
         try {
@@ -117,10 +127,55 @@ public class DynamoSessionRepository implements SessionRepository, Recommendatio
                 var item = db.getItem(GetItemRequest.builder().tableName(sessionsTable)
                         .key(key(sessionId)).consistentRead(true).build()).item();
                 if (!userId.equals(item.getOrDefault("userId", text("")).s())) throw ApiException.notFound();
-                if (item.containsKey("recommendations") && !item.get("recommendations").l().isEmpty()) {
+                if (item.containsKey("version")
+                        || item.containsKey("recommendations") && !item.get("recommendations").l().isEmpty()) {
                     throw ApiException.recommendationExists();
                 }
             }
+            throw cancelled;
+        }
+    }
+
+    @Override
+    public boolean saveExclusion(String userId, String sessionId, Long expectedVersion, Exclusion exclusion) {
+        validateRecommendations(exclusion.recommendations());
+        validateAnalysis(exclusion.analysis());
+        validateCandidates(exclusion.candidates());
+        validateExcluded(exclusion.excluded());
+        var values = new RecommendationSession();
+        values.setRecommendations(exclusion.recommendations());
+        values.setAnalysis(exclusion.analysis());
+        values.setCandidates(exclusion.candidates());
+        values.setExcluded(exclusion.excluded());
+        var stored = SCHEMA.itemToMap(values, true);
+        var names = new HashMap<>(Map.of("#results", "recommendations", "#owner", "userId", "#candidates", "candidates",
+                "#excluded", "excluded", "#version", "version"));
+        long next = expectedVersion == null ? 1 : expectedVersion + 1;
+        var attributes = new HashMap<>(Map.of(":owner", text(userId), ":results", stored.get("recommendations"),
+                ":candidates", stored.get("candidates"), ":excluded", stored.get("excluded"),
+                ":next", AttributeValue.builder().n(Long.toString(next)).build()));
+        String assignments = "SET #results = :results, #candidates = :candidates, #excluded = :excluded, #version = :next";
+        if (exclusion.analysis() != null) {
+            assignments += ", #analysis = :analysis";
+            names.put("#analysis", "analysis");
+            attributes.put(":analysis", stored.get("analysis"));
+        }
+        String versionCheck = "attribute_not_exists(#version)";
+        if (expectedVersion != null) {
+            versionCheck = "#version = :expected";
+            attributes.put(":expected", AttributeValue.builder().n(expectedVersion.toString()).build());
+        }
+        var update = Update.builder().tableName(sessionsTable).key(key(sessionId))
+                .updateExpression(assignments)
+                .conditionExpression("attribute_exists(sessionId) AND #owner = :owner AND " + versionCheck)
+                .expressionAttributeNames(names).expressionAttributeValues(attributes).build();
+        try {
+            db.transactWriteItems(TransactWriteItemsRequest.builder().clientRequestToken(UUID.randomUUID().toString())
+                    .transactItems(activeUser(userId), TransactWriteItem.builder().update(update).build()).build());
+            return true;
+        } catch (TransactionCanceledException cancelled) {
+            requireActiveUser(cancelled);
+            if (conditionalFailure(cancelled, 1)) return false;
             throw cancelled;
         }
     }
@@ -160,6 +215,30 @@ public class DynamoSessionRepository implements SessionRepository, Recommendatio
                     && !item.getMatchedParticipants().stream().allMatch(DynamoSessionRepository::validParticipant)) {
                 throw ApiException.validation("추천 결과의 장르 코드·참여자 번호를 확인해주세요.");
             }
+        }
+    }
+
+    private static void validateCandidates(List<Recommendation> candidates) {
+        if (candidates == null || candidates.size() > MAX_CANDIDATES) {
+            throw ApiException.validation("추천 후보는 최대 " + MAX_CANDIDATES + "개여야 합니다.");
+        }
+        var seen = new HashSet<String>();
+        for (Recommendation item : candidates) {
+            if (item == null || item.getTmdbId() == null || item.getTmdbId() < 1 || item.getMediaType() == null
+                    || !List.of("movie", "tv").contains(item.getMediaType())
+                    || !seen.add(RecommendationSession.contentKey(item.getMediaType(), item.getTmdbId()))
+                    || item.getGenres() != null && !item.getGenres().stream().allMatch(Genre::isValidCode)) {
+                throw ApiException.validation("추천 후보의 콘텐츠 ID·유형·장르를 확인해주세요.");
+            }
+        }
+    }
+
+    private static void validateExcluded(List<String> excluded) {
+        // Every excluded title came from the stored results, so the list is bounded by results + candidates.
+        if (excluded == null || excluded.size() > 3 + MAX_CANDIDATES
+                || !excluded.stream().allMatch(key -> key != null && key.matches("(movie|tv):[1-9][0-9]{0,18}"))
+                || excluded.stream().distinct().count() != excluded.size()) {
+            throw ApiException.validation("제외 목록을 확인해주세요.");
         }
     }
 

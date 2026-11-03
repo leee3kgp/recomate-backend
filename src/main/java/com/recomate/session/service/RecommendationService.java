@@ -24,11 +24,14 @@ public class RecommendationService {
         var session = sessions.findById(sessionId).filter(value -> userId.equals(value.getUserId()))
                 .orElseThrow(ApiException::notFound);
         // Avoid paid external calls for a known duplicate; the conditional write still settles races.
-        if (session.getRecommendations() != null && !session.getRecommendations().isEmpty()) {
+        // version is set once generation stores a title, so excluding every title does not reopen generation.
+        if (session.getVersion() != null
+                || session.getRecommendations() != null && !session.getRecommendations().isEmpty()) {
             throw ApiException.recommendationExists();
         }
         var generated = generator.generate(session);
-        results.saveRecommendations(userId, sessionId, generated.recommendations(), generated.analysis());
+        results.saveRecommendations(userId, sessionId, generated.recommendations(), generated.analysis(),
+                generated.candidates());
         return new RecommendationResponse(sessionId, generated.recommendations(), generated.analysis());
     }
 }

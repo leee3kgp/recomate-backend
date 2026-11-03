@@ -22,6 +22,10 @@ public class RecommendationSession {
     private List<Recommendation> recommendations = new ArrayList<>();
     private String createdAt; // ISO-8601 (UTC)
     private SessionAnalysis analysis;
+    // #18 exclusions: internal state, never returned by the API. Null until written so new items keep their shape.
+    private List<Recommendation> candidates; // unranked next-best titles in score order
+    private List<String> excluded; // "mediaType:tmdbId"
+    private Long version; // 1 once generation stores a title, +1 per exclusion; guards regeneration and concurrent exclusions
 
     @DynamoDbPartitionKey
     public String getSessionId() { return sessionId; }
@@ -45,4 +49,13 @@ public class RecommendationSession {
     public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
     public SessionAnalysis getAnalysis() { return analysis; }
     public void setAnalysis(SessionAnalysis analysis) { this.analysis = analysis; }
+
+    public List<Recommendation> getCandidates() { return candidates; }
+    public void setCandidates(List<Recommendation> candidates) { this.candidates = candidates; }
+    public List<String> getExcluded() { return excluded; }
+    public void setExcluded(List<String> excluded) { this.excluded = excluded; }
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
+
+    public static String contentKey(String mediaType, Long tmdbId) { return mediaType + ":" + tmdbId; }
 }

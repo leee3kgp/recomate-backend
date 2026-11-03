@@ -360,6 +360,46 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
         TimeoutInMillis: 29000
+  SessionExclusionsResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Route "already watched" exclusions (#18) for a session to the existing authenticated application.
+        must: [Keep this route under the session detail path.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref SessionDetailResource, PathPart: exclusions}
+  SessionExclusionsPost:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Exclude one title and promote a stored candidate for an owned session through the existing authorizer.
+        must: [Apply the same Cognito authorizer as session creation.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionExclusionsResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SessionExclusionsOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Keep exclusion POST authenticated., Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SessionExclusionsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
   SessionPost:
     Type: AWS::ApiGateway::Method
     Metadata:
@@ -514,7 +554,7 @@ Resources:
     Type: AWS::Lambda::Permission
     Metadata:
       com.aws.cloudformation.Context:
-        why: Permit detail, deletion and recommendation requests from this project's existing API and dev stage.
+        why: Permit detail, deletion, recommendation and exclusion requests from this project's existing API and dev stage.
         must: [Keep the project and stage constraints., Limit the source path to session children.]
     Properties:
       FunctionName: !Ref ApiFunction
@@ -568,21 +608,21 @@ Resources:
         gatewayresponse.header.Content-Type: "'application/json'"
       ResponseTemplates:
         application/json: '{"error":{"code":"$context.error.responseType","message":"요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."}}'
-  ApiDeploymentGatewayResponsesV1:
+  ApiDeploymentSessionExclusionsV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish stack-managed error responses alongside all existing methods.
+        why: Publish the session exclusion route (#18) alongside all existing methods and gateway responses.
         must: [Wait for all methods and gateway responses., Change the logical ID for future route or response changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate APIs with stack-managed gateway error responses
+      Description: RecoMate APIs with session exclusions and stack-managed gateway error responses
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentGatewayResponsesV1
+      DeploymentId: !Ref ApiDeploymentSessionExclusionsV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'

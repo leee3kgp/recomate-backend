@@ -9,7 +9,18 @@ import java.util.List;
 public interface RecommendationGenerator {
     Result generate(RecommendationSession session);
 
-    record Result(List<Recommendation> recommendations, SessionAnalysis analysis) {
-        public Result { recommendations = List.copyOf(recommendations); }
+    /** Recomputes analysis for stored titles without external calls, e.g. after an exclusion (#18). */
+    SessionAnalysis analyze(RecommendationSession session, List<Recommendation> recommendations);
+
+    /** candidates: next-best unranked titles in score order, stored so exclusions avoid TMDB calls. */
+    record Result(List<Recommendation> recommendations, SessionAnalysis analysis, List<Recommendation> candidates) {
+        public Result {
+            recommendations = List.copyOf(recommendations);
+            candidates = List.copyOf(candidates);
+        }
+
+        public Result(List<Recommendation> recommendations, SessionAnalysis analysis) {
+            this(recommendations, analysis, List.of());
+        }
     }
 }

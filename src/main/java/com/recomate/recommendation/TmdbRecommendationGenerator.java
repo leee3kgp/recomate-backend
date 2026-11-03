@@ -25,6 +25,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class TmdbRecommendationGenerator implements RecommendationGenerator {
     private static final int LIMIT = 3;
+    /** Bounded so the session item stays far below the DynamoDB 400 KB item limit. */
+    static final int CANDIDATE_LIMIT = 20;
     private final TmdbClient tmdb;
     private final RecommendationScorer scorer;
 
@@ -40,10 +42,29 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
         participants.values().forEach(genres::addAll);
         List<TmdbContent> candidates = Stream.of(ContentType.values())
                 .flatMap(type -> tmdb.discover(type, genres).stream()).toList();
-        List<Scored> top = scorer.top(participants, candidates, LIMIT);
+        List<Scored> ranked = scorer.top(participants, candidates, LIMIT + CANDIDATE_LIMIT);
+        List<Scored> top = ranked.subList(0, Math.min(LIMIT, ranked.size()));
         List<Recommendation> recommendations = IntStream.range(0, top.size())
                 .mapToObj(index -> recommendation(index + 1, top.get(index))).toList();
-        return new Result(recommendations, analysis(participants, top));
+        List<Recommendation> next = ranked.subList(top.size(), ranked.size()).stream()
+                .map(scored -> recommendation(null, scored)).toList();
+        return new Result(recommendations, analysis(participants, genresOf(top)), next);
+    }
+
+    @Override
+    public SessionAnalysis analyze(RecommendationSession session, List<Recommendation> recommendations) {
+        List<Set<Genre>> titles = recommendations.stream().map(item -> {
+            Set<Genre> genres = EnumSet.noneOf(Genre.class);
+            if (item.getGenres() != null) {
+                item.getGenres().stream().filter(Genre::isValidCode).map(Genre::valueOf).forEach(genres::add);
+            }
+            return genres;
+        }).toList();
+        return analysis(participants(session), titles);
+    }
+
+    private static List<Set<Genre>> genresOf(List<Scored> top) {
+        return top.stream().map(scored -> scored.content().genres()).toList();
     }
 
     private static Map<Integer, Set<Genre>> participants(RecommendationSession session) {
@@ -59,7 +80,7 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
         return result;
     }
 
-    private static Recommendation recommendation(int rank, Scored scored) {
+    private static Recommendation recommendation(Integer rank, Scored scored) {
         TmdbContent content = scored.content();
         var value = new Recommendation();
         value.setRank(rank);
@@ -75,7 +96,7 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
         return value;
     }
 
-    private static SessionAnalysis analysis(Map<Integer, Set<Genre>> participants, List<Scored> top) {
+    private static SessionAnalysis analysis(Map<Integer, Set<Genre>> participants, List<Set<Genre>> top) {
         var analysis = new SessionAnalysis();
         analysis.setGenreScores(genreScores(participants.values()));
         List<SessionAnalysis.ParticipantMatch> matches = new ArrayList<>();
@@ -95,8 +116,8 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
     }
 
     /** Match rate averages, over the recommended titles, each title's genre overlap with this participant. */
-    private static SessionAnalysis.ParticipantMatch participantMatch(int index, Set<Genre> selected, List<Scored> top) {
-        double total = top.stream().mapToDouble(scored -> genreOverlap(selected, scored.content().genres())).sum();
+    private static SessionAnalysis.ParticipantMatch participantMatch(int index, Set<Genre> selected, List<Set<Genre>> top) {
+        double total = top.stream().mapToDouble(genres -> genreOverlap(selected, genres)).sum();
         var match = new SessionAnalysis.ParticipantMatch();
         match.setIndex(index);
         match.setMatchRate(top.isEmpty() ? 0 : Math.round(100.0 * total / top.size()) / 100.0);

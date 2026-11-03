@@ -116,6 +116,50 @@ class TmdbRecommendationGeneratorTest {
     }
 
     @Test
+    void titlesAfterTopThreeAreKeptAsUnrankedCandidatesInScoreOrder() {
+        TmdbClient tmdb = (type, genres) -> type == ContentType.MOVIE ? List.of(
+                content(1, type, Genre.ACTION, Genre.SF), content(2, type, Genre.SF),
+                content(3, type, Genre.ACTION), content(4, type, Genre.SF, Genre.ACTION),
+                new TmdbContent(5, type, "title5", null, 2020, 2.0, 1000, 1, Set.of(Genre.ACTION))) : List.of();
+
+        var result = new TmdbRecommendationGenerator(tmdb, scorer).generate(session());
+
+        assertEquals(List.of(1L, 4L, 2L), result.recommendations().stream().map(r -> r.getTmdbId()).toList());
+        assertEquals(List.of(3L, 5L), result.candidates().stream().map(r -> r.getTmdbId()).toList());
+        assertTrue(result.candidates().stream().allMatch(c -> c.getRank() == null && c.getGenres() != null));
+        assertTrue(result.candidates().get(0).getScore() >= result.candidates().get(1).getScore());
+    }
+
+    @Test
+    void candidateListIsBoundedForTheSessionItem() {
+        List<TmdbContent> many = new ArrayList<>();
+        for (long id = 1; id <= 40; id++) many.add(content(id, ContentType.MOVIE, Genre.SF));
+        TmdbClient tmdb = (type, genres) -> type == ContentType.MOVIE ? many : List.of();
+
+        var result = new TmdbRecommendationGenerator(tmdb, scorer).generate(session());
+
+        assertEquals(3, result.recommendations().size());
+        assertEquals(TmdbRecommendationGenerator.CANDIDATE_LIMIT, result.candidates().size());
+    }
+
+    @Test
+    void analyzeUsesStoredGenresAndMatchesGeneration() {
+        var session = session();
+        TmdbClient tmdb = (type, genres) -> type == ContentType.MOVIE
+                ? List.of(content(1, type, Genre.SF, Genre.ACTION), content(2, type, Genre.ACTION)) : List.of();
+        var generator = new TmdbRecommendationGenerator(tmdb, scorer);
+        var generated = generator.generate(session);
+
+        var recomputed = generator.analyze(session, generated.recommendations());
+
+        assertEquals(generated.analysis().getParticipantMatch().get(0).getMatchRate(),
+                recomputed.getParticipantMatch().get(0).getMatchRate());
+        assertEquals(generated.analysis().getParticipantMatch().get(1).getMatchRate(),
+                recomputed.getParticipantMatch().get(1).getMatchRate());
+        assertEquals(0.0, generator.analyze(session, List.of()).getParticipantMatch().get(0).getMatchRate());
+    }
+
+    @Test
     void upstreamFailureIsNotHidden() {
         TmdbClient failing = (type, genres) -> { throw ApiException.upstream(); };
 
