@@ -18,6 +18,7 @@ phases:
     commands:
       - >-
         docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load
+        --build-arg BASE_REGISTRY=public.ecr.aws/docker/library
         --label "com.recomate.source-sha256=$SOURCE_SHA256"
         --tag "$ECR_REPOSITORY_URI:$IMAGE_TAG" .
       - bash scripts/container-smoke.sh "$ECR_REPOSITORY_URI:$IMAGE_TAG"

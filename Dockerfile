@@ -1,6 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM eclipse-temurin:21-jdk-jammy@sha256:a3549cccdf55692d4ea15142d53da096d7181c1645d0a5aa2940271cb74e80c9 AS build
+# Registry for the digest-pinned base images. Local and GitHub Actions builds keep Docker Hub;
+# CodeBuild passes public.ecr.aws/docker/library (AWS mirror of Docker official images) because
+# anonymous Docker Hub pulls from shared CodeBuild IPs are rate-limited (429). Same digests, same bytes.
+# When updating a digest, confirm it also exists in the mirror before the next AWS build.
+ARG BASE_REGISTRY=docker.io/library
+
+FROM ${BASE_REGISTRY}/eclipse-temurin:21-jdk-jammy@sha256:a3549cccdf55692d4ea15142d53da096d7181c1645d0a5aa2940271cb74e80c9 AS build
 WORKDIR /workspace
 
 COPY gradlew settings.gradle build.gradle ./
@@ -11,7 +17,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew --no-daemon test bootJar
 
-FROM eclipse-temurin:21-jre-jammy@sha256:8ed277f7e3f513b3f7fe9be8e22bbd2a5f9ccd9a8f87dcfa49fbbb2c6a82690f AS runtime-base
+FROM ${BASE_REGISTRY}/eclipse-temurin:21-jre-jammy@sha256:8ed277f7e3f513b3f7fe9be8e22bbd2a5f9ccd9a8f87dcfa49fbbb2c6a82690f AS runtime-base
 WORKDIR /app
 
 COPY --from=build --chmod=0444 /workspace/build/libs/recomate.jar /app/recomate.jar
