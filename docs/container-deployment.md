@@ -4,6 +4,10 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## 프론트 배포 주소 CORS 추가 (2026-11-03)
+
+[#20](https://github.com/leee3kgp/recomate-backend/issues/20)의 프론트 배포 주소 `https://d15wymuj9qezfe.cloudfront.net`을 `AllowedOrigin`에 추가했습니다. 현재 값은 `http://localhost:5173,http://127.0.0.1:5173,https://d15wymuj9qezfe.cloudfront.net`입니다. 변경 계획 `cors-frontend-cloudfront`은 이전 템플릿·이미지를 유지하고 Lambda 환경 변수만 변경했으며, 사용자 승인으로 적용해 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 검증 결과는 [프론트엔드 배포](frontend-deployment.md)를 따릅니다.
+
 ## "이미 봤어요" 제외 API 배포 (2026-11-03)
 
 [#18](https://github.com/leee3kgp/recomate-backend/issues/18)의 `POST /api/sessions/{sessionId}/exclusions`와 OPTIONS를 추가하고 새 배포 스냅샷 `ApiDeploymentSessionExclusionsV1`을 dev Stage에 반영했습니다. 현재 dev 배포 ID는 `m0s661`입니다. Lambda 호출 권한은 기존 `/api/sessions/*` 범위, 실행 역할은 기존 세션 테이블 `UpdateItem`을 사용해 IAM·테이블·Cognito·CORS·TMDB 토큰은 변경하지 않았습니다.
@@ -92,6 +96,7 @@ ARM 기반 Mac에서는 amd64 에뮬레이션으로 빌드가 느릴 수 있습�
 | `infra/build.yaml` | 비공개 소스 ZIP 버킷, 최근 이미지 5개를 보관하는 immutable ECR 저장소, CodeBuild 역할·프로젝트, 암호화된 빌드 로그 |
 | `infra/user-api.yaml` | 사용자 테이블, 이전 검증용 테이블 보존, 공유 BE2 테이블 연결, 실행 역할, Lambda, 기존 API Gateway의 사용자·장르·세션·추천 경로와 개발 Stage |
 | `infra/sessions.yaml` | PR #9의 sessionId 기본 키·사용자별 GSI를 사용하는 공유 RecommendationSession 테이블 |
+| `infra/frontend.yaml` | 프론트 정적 파일용 비공개 S3·CloudFront와 지정 커밋 배포 CodeBuild. 절차는 [프론트엔드 배포](frontend-deployment.md) |
 | `buildspec.yml` | Docker 이미지 빌드, 읽기 전용 컨테이너의 401·CORS 확인, 성공한 이미지만 ECR push |
 | `scripts/package-source.py` | 환경 설정·자격 증명을 제외한 소스 ZIP과 내용 해시 생성 |
 | `scripts/generate-runtime-policy.ps1` | Java SDK 호출을 Autopilot으로 분석하여 IAM 정책 초안 생성. 업로드·적용하지 않음 |
