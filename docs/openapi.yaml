@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecoMate User, Session and Genre API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
     The response fields, nickname handling and withdrawal lifecycle below are the confirmed
@@ -32,6 +32,10 @@ info:
     Session deletion, TMDB-backed recommendation generation and existing regression paths
     passed 146 live checkpoints on 2026-10-30. FE browser integration was not part of these checks.
     The browser flow was verified separately on 2026-10-31 against the development API (#16).
+    Issue #18 adds POST /api/sessions/{sessionId}/exclusions ("이미 봤어요"). Generation now also
+    stores up to 20 unranked next candidates, so exclusions never call TMDB. The exclusion flow,
+    regeneration block, withdrawal cleanup and all route preflights passed 23 live checkpoints
+    plus a 12-route 401/CORS sweep in the development deployment on 2026-11-03.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
@@ -195,7 +199,10 @@ paths:
         matchedParticipants and analysis indexes must be 1-6. genreScores counts the
         participants who selected each genre. matchRate averages, over the recommended
         titles, shared genres divided by the smaller of the participant's and the title's
-        genre counts. TMDB failure returns 502 and stores nothing.
+        genre counts. TMDB failure returns 502 and stores nothing. The same write stores up
+        to 20 next candidates in score order (internal, never returned). A session that stored
+        at least one title stays rejected even after every title has been excluded; an empty
+        TMDB result is stored without that mark and can still be retried.
       parameters:
         - in: path
           name: sessionId
@@ -213,7 +220,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/SessionNotFound' }
         '409':
-          description: RECOMMENDATION_EXISTS - this session already has stored results
+          description: RECOMMENDATION_EXISTS - this session already generated results (including after exclusions)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -223,6 +230,53 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+  /api/sessions/{sessionId}/exclusions:
+    post:
+      operationId: excludeRecommendation
+      summary: Exclude an already-watched title and promote the next stored candidate
+      description: |
+        "이미 봤어요" (#18). The title must be one of the session's current recommendations,
+        matched by mediaType and tmdbId together. It is removed, the remaining titles move up,
+        and the best stored candidate that is neither excluded nor already shown becomes the
+        last rank. When no candidate remains, the response simply has fewer titles (possibly
+        none). participantMatch is recomputed for the new titles; genreScores is unchanged.
+        No TMDB call is made. Repeating an exclusion that already succeeded returns 200 with
+        the current results and writes nothing, so double taps are safe. Sessions stored before
+        #18 have no candidates and only lose the excluded title. Writes are conditional on the
+        version the server read and on the ACTIVE user status in one transaction; one lost race
+        is retried internally, a second one returns 409 CONCURRENT_UPDATE.
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExclusionRequest' }
+            example: { tmdbId: 603, mediaType: movie }
+      responses:
+        '200':
+          description: Exclusion stored; refreshed results in the same shape as generation
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecommendationResult' }
+        '400':
+          description: VALIDATION_ERROR - malformed sessionId or body, or the title is not in the current results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/SessionNotFound' }
+        '409':
+          description: CONCURRENT_UPDATE - another exclusion for this session kept winning; retry
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /api/users/me:
     get:
       operationId: getMyProfile
@@ -436,6 +490,13 @@ components:
         sessionId: { $ref: '#/components/schemas/Session/properties/sessionId' }
         recommendations: { $ref: '#/components/schemas/Session/properties/recommendations' }
         analysis: { $ref: '#/components/schemas/StoredAnalysis' }
+    ExclusionRequest:
+      type: object
+      additionalProperties: false
+      required: [tmdbId, mediaType]
+      properties:
+        tmdbId: { type: integer, minimum: 1 }
+        mediaType: { type: string, enum: [movie, tv] }
     StoredRecommendation:
       type: object
       additionalProperties: false
@@ -566,7 +627,8 @@ x-dynamodb:
         partitionKey: { name: userId, type: S }
         sortKey: { name: createdAt, type: S }
     recommendations: Embedded in session items; deleting a session removes its results
+    exclusions: 'candidates (L, max 20 unranked titles in score order), excluded (L of "mediaType:tmdbId"), version (N, set to 1 when generation stores at least one title and +1 per exclusion). Internal only; absent on items created before #18.'
     delete: Conditional DeleteItem keyed by sessionId and requiring the JWT-sub owner.
     read: List uses bounded GSI Query with JWT-sub key and descending stored createdAt; detail uses consistent base-table GetItem and ownership check. No read-side writes or enrichment.
     erase: After DELETING, strongly consistent base-table Scan filtered by userId; paginate every page and delete using sessionId-only keys in batches of 25; retry unprocessed items. Never use GSI emptiness as proof of completion.
-    integrationRequirement: Every session and recommendation write must check user status ACTIVE atomically in the same DynamoDB transaction. Recommendation updates must also require an existing owned session and empty previous results. Ensure the app profile exists before session creation.
+    integrationRequirement: Every session and recommendation write must check user status ACTIVE atomically in the same DynamoDB transaction. Recommendation updates must also require an existing owned session, empty previous results and no version. Exclusion updates must require an existing owned session and the version that was read (attribute_not_exists for pre-#18 items). Ensure the app profile exists before session creation.

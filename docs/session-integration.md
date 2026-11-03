@@ -44,7 +44,7 @@ BE2의 별도 SecurityConfig·DynamoDbConfig·GlobalExceptionHandler를 중복 �
 
 사용자 상태를 먼저 읽고 나중에 단순 Put하는 방식은 사용하지 않습니다. 탈퇴가 DELETING을 기록하면 이후 저장은 원자적으로 거절됩니다.
 
-추천 생성 담당 코드는 `RecommendationRepository.saveRecommendations(userId, sessionId, results)`를 사용합니다. 이 저장소는 같은 ACTIVE 조건과 함께 본인 세션이 존재하고 기존 추천이 비어 있는 경우에만 recommendations 속성을 변경합니다. 없는 세션을 다시 생성하지 않고 타인 세션은 404, 기존 추천은 409, 탈퇴 상태는 401로 처리합니다. 최대 3개·연속 순위·양수 TMDB ID·movie/tv 유형·콘텐츠 중복을 검사합니다. 실제 추천 API의 TMDB·알고리즘 호출은 담당 코드에서 수행하며 이 저장 메서드에 연결해야 합니다.
+추천 생성 담당 코드는 `RecommendationRepository.saveRecommendations(userId, sessionId, results)`를 사용합니다. 이 저장소는 같은 ACTIVE 조건과 함께 본인 세션이 존재하고 기존 추천이 비어 있는 경우에만 recommendations 속성을 변경합니다. 없는 세션을 다시 생성하지 않고 타인 세션은 404, 기존 추천은 409, 탈퇴 상태는 401로 처리합니다. 최대 3개·연속 순위·양수 TMDB ID·movie/tv 유형·콘텐츠 중복을 검사합니다. 실제 추천 API의 TMDB·알고리즘 호출은 담당 코드에서 수행하며 이 저장 메서드에 연결해야 합니다. #18부터 생성 시 다음 후보와 `version`을 함께 저장하고, 제외 쓰기(`saveExclusion`)는 읽은 `version` 조건과 같은 ACTIVE 트랜잭션을 사용합니다. 자세한 기준은 ["이미 봤어요" 제외 API](exclusion-api.md)를 따릅니다.
 
 ## 삭제의 정확성과 비용
 

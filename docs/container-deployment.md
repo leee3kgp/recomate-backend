@@ -4,7 +4,17 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## "이미 봤어요" 제외 API 배포 (2026-11-03)
+
+[#18](https://github.com/leee3kgp/recomate-backend/issues/18)의 `POST /api/sessions/{sessionId}/exclusions`와 OPTIONS를 추가하고 새 배포 스냅샷 `ApiDeploymentSessionExclusionsV1`을 dev Stage에 반영했습니다. 현재 dev 배포 ID는 `m0s661`입니다. Lambda 호출 권한은 기존 `/api/sessions/*` 범위, 실행 역할은 기존 세션 테이블 `UpdateItem`을 사용해 IAM·테이블·Cognito·CORS·TMDB 토큰은 변경하지 않았습니다.
+
+현재 이미지는 `src-a46b4b3fc58f8d58`, digest `sha256:886555ae9295ca32ec2d74e8eb807bc1204d08667637597cf66793906606b30d`입니다. 처음 두 번의 CodeBuild는 Docker Hub의 `429 Too Many Requests`로 기본 이미지를 받지 못해 실패했고, 아래 [배포 이미지 준비](#배포-이미지-준비)의 `BASE_REGISTRY` 설정을 추가한 뒤 CodeBuild `cd53d13b-b94e-4d2c-a369-c23fca5545e2`의 빌드·테스트·컨테이너 검사(제외 경로 포함)와 ECR 기본 스캔(발견 항목 0개)을 확인했습니다. 변경 계획 `exclusions-src-a46b4b3fc58f8d58`을 검토 후 사용자 승인으로 적용했고 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 기존 메서드 18개는 Lambda ARN 참조로 변경 후보에 표시됐지만 ARN이 유지되어 실제 변경은 없었습니다.
+
+실제 dev API에서 임시 Cognito 사용자로 추천 생성, 제외·재요청, 세션 상세 반영, 400·404·401·CORS, 후보 20개 소진 후 빈 결과, 재생성 409, 앱 탈퇴로 세션·Cognito 사용자 삭제까지 23개 항목을 통과했습니다. 전체 12개 경로의 미인증 401과 사전 요청 200도 확인했습니다. 탈퇴 상태 표시는 기존 정책대로 48시간 TTL로 남습니다. 이전 이미지 `sha256:5e8575ea…`는 ECR 보관 규칙 범위 안에 있어 되돌릴 수 있습니다.
+
 ## 일치율·오류 응답 배포 (2026-11-01)
+
+이 절은 당시 기록입니다. 현재 이미지는 위 제외 API 배포 결과를 따릅니다.
 
 `matchRate` 계산 변경, GatewayResponse 4종의 스택 관리, 여러 `AllowedOrigin`, ECR 보관 규칙을 반영했습니다. 테이블·키·Cognito·TMDB 토큰은 변경하지 않았습니다.
 
@@ -107,6 +117,13 @@ CodeBuild를 시작할 때는 소스 ZIP의 S3 위치·버전을 고정하고, m
 docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load --tag recomate-backend:local .
 docker compose up --no-build -d
 docker compose ps
+```
+
+기본 이미지는 digest로 고정하고, 받는 위치는 `BASE_REGISTRY` 빌드 인자로 정합니다. 로컬·Compose·GitHub Actions는 기본값 `docker.io/library`(Docker Hub)를 그대로 사용합니다. CodeBuild는 공용 IP의 익명 Docker Hub 요청이 `429 Too Many Requests`로 거절된 사례(2026-11-03)가 있어 `buildspec.yml`에서 `public.ecr.aws/docker/library`(AWS가 운영하는 Docker 공식 이미지 미러)를 지정합니다. digest가 같으므로 받는 이미지 내용은 동일합니다. 기본 이미지 digest를 갱신할 때는 새 digest가 미러에도 있는지 확인한 뒤 AWS 빌드를 실행합니다.
+
+```text
+curl -s https://public.ecr.aws/token/   # 익명 토큰 발급 후
+curl -I -H "Authorization: Bearer <token>" https://public.ecr.aws/v2/docker/library/eclipse-temurin/manifests/sha256:<digest>   # 200이면 사용 가능
 ```
 
 Lambda 배포용 이미지는 단일 아키텍처로 만들고 provenance/SBOM attestation을 끕니다. 테스트한 최종 이미지를 다시 빌드하지 않고 그대로 push한 뒤, 최종 ECR digest로 배포 버전을 고정합니다.
