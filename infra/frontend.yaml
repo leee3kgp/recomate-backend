@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Serve the static frontend from a private S3 bucket through CloudFront and deploy pinned main commits with CodeBuild.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    ref:
+      - at: docs/frontend-deployment.md
+        has: Frontend hosting, deployment, rollback and verification procedure
+        scope: shared
+    must:
+      - Keep the bucket private; only this distribution may read it.
+      - Deploy only commits reachable from the frontend main branch.
+Parameters:
+  FrontendRepositoryUrl:
+    Type: String
+    Default: https://github.com/leee3kgp/recomate-frontend.git
+    AllowedPattern: 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git'
+    Description: Public frontend repository cloned without credentials.
+  ApiBaseUrl:
+    Type: String
+    Default: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
+    AllowedPattern: 'https://[a-z0-9.-]+(/[A-Za-z0-9_-]+)*'
+    Description: API stage URL baked into the build as VITE_API_BASE_URL.
+Rules:
+  ProjectRegion:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::Region', ap-southeast-2]
+        AssertDescription: All project resources must stay in the selected Region.
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Hold built static files; versions allow restoring a previous deployment.
+        must: [Keep public access blocked., Serve objects only through CloudFront.]
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      VersioningConfiguration: {Status: Enabled}
+      OwnershipControls:
+        Rules: [{ObjectOwnership: BucketOwnerEnforced}]
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireReplacedFiles
+            Status: Enabled
+            NoncurrentVersionExpiration: {NoncurrentDays: 30}
+            AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-site'
+        Description: Signed CloudFront reads from the private frontend bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Serve the frontend over HTTPS with managed caching and security headers.
+        must: [Redirect HTTP to HTTPS., Keep the S3 origin private behind origin access control.]
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} frontend'
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig: {OriginAccessIdentity: ''}
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # Managed CachingOptimized honours the per-file Cache-Control set at upload.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          # Managed SecurityHeadersPolicy: HSTS, nosniff, frame SAMEORIGIN, referrer policy, XSS protection.
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+        CustomErrorResponses:
+          # A private bucket answers 403 for missing keys; show the home entry page with a 404 status.
+          - ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+        ViewerCertificate: {CloudFrontDefaultCertificate: true}
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RequireTls
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt SiteBucket.Arn, !Sub '${SiteBucket.Arn}/*']
+            Condition: {Bool: {'aws:SecureTransport': false}}
+          - Sid: AllowOnlyThisDistribution
+            Effect: Allow
+            Principal: {Service: cloudfront.amazonaws.com}
+            Action: s3:GetObject
+            Resource: !Sub '${SiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+  DeployLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Keep short-lived deployment logs; CloudWatch default encryption at rest avoids a separate paid key.
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${AWS::StackName}'
+      RetentionInDays: 7
+  DeployRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Let the deploy build write only this site's files, its logs and cache invalidations.
+        must: [Do not grant application data, IAM or other bucket access., Keep CodeBuild trust scoped to this project.]
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codebuild.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: {'aws:SourceAccount': !Ref 'AWS::AccountId'}
+              ArnEquals:
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${AWS::StackName}'
+      Policies:
+        - PolicyName: FrontendDeploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
+                Resource: !GetAtt DeployLogGroup.Arn
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt SiteBucket.Arn
+              - Effect: Allow
+                Action: ['s3:PutObject', 's3:DeleteObject']
+                Resource: !Sub '${SiteBucket.Arn}/*'
+              - Effect: Allow
+                Action: ['cloudfront:CreateInvalidation', 'cloudfront:GetInvalidation']
+                Resource: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+  DeployProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Build a pinned frontend main commit and publish it without storing GitHub or AWS credentials.
+        must: [Reject commits that are not on main., Upload hashed assets before the HTML that references them.]
+    Properties:
+      Name: !Ref 'AWS::StackName'
+      ServiceRole: !GetAtt DeployRole.Arn
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 22
+            pre_build:
+              commands:
+                - '[[ "$FRONTEND_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Set FRONTEND_COMMIT to a full 40-character commit SHA"; exit 1; }'
+                - git clone --quiet --filter=blob:none "$FRONTEND_REPOSITORY_URL" "$CODEBUILD_SRC_DIR/site"
+                - git -C "$CODEBUILD_SRC_DIR/site" merge-base --is-ancestor "$FRONTEND_COMMIT" origin/main || { echo "Commit is not on main"; exit 1; }
+                - git -C "$CODEBUILD_SRC_DIR/site" checkout --quiet --detach "$FRONTEND_COMMIT"
+                - npm --prefix "$CODEBUILD_SRC_DIR/site" ci --no-audit --no-fund
+            build:
+              on-failure: ABORT
+              commands:
+                - cd "$CODEBUILD_SRC_DIR/site" && VITE_API_BASE_URL="$API_BASE_URL" npm run build
+                - test -f "$CODEBUILD_SRC_DIR/site/dist/index.html" && test -f "$CODEBUILD_SRC_DIR/site/dist/pages/index.html"
+                - printf '{"commit":"%s","builtAt":"%s","apiBaseUrl":"%s"}\n' "$FRONTEND_COMMIT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$API_BASE_URL" > "$CODEBUILD_SRC_DIR/site/dist/version.json"
+                - find "$CODEBUILD_SRC_DIR/site/dist" -type f | sort
+            post_build:
+              commands:
+                - test "$CODEBUILD_BUILD_SUCCEEDING" = 1
+                # 1) New hashed assets first so the next HTML never points at a missing file.
+                - if [ -d "$CODEBUILD_SRC_DIR/site/dist/assets" ]; then aws s3 sync "$CODEBUILD_SRC_DIR/site/dist/assets" "s3://$SITE_BUCKET/assets" --only-show-errors --cache-control "public,max-age=31536000,immutable"; fi
+                # 2) HTML and other files; browsers revalidate them on every visit.
+                - aws s3 sync "$CODEBUILD_SRC_DIR/site/dist" "s3://$SITE_BUCKET" --only-show-errors --delete --exclude "assets/*" --cache-control "no-cache"
+                - aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths "/*" --query Invalidation.Id --output text > "$CODEBUILD_SRC_DIR/invalidation-id"
+                - aws cloudfront wait invalidation-completed --distribution-id "$DISTRIBUTION_ID" --id "$(cat "$CODEBUILD_SRC_DIR/invalidation-id")"
+                # 3) Remove assets no longer referenced only after the new HTML is live.
+                - if [ -d "$CODEBUILD_SRC_DIR/site/dist/assets" ]; then aws s3 sync "$CODEBUILD_SRC_DIR/site/dist/assets" "s3://$SITE_BUCKET/assets" --only-show-errors --delete --cache-control "public,max-age=31536000,immutable"; fi
+                - echo "Deployed $FRONTEND_COMMIT"
+      Artifacts: {Type: NO_ARTIFACTS}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:8.0
+        EnvironmentVariables:
+          - {Name: FRONTEND_REPOSITORY_URL, Value: !Ref FrontendRepositoryUrl}
+          - {Name: API_BASE_URL, Value: !Ref ApiBaseUrl}
+          - {Name: SITE_BUCKET, Value: !Ref SiteBucket}
+          - {Name: DISTRIBUTION_ID, Value: !Ref Distribution}
+          - {Name: FRONTEND_COMMIT, Value: require-commit-override}
+      TimeoutInMinutes: 20
+      QueuedTimeoutInMinutes: 10
+      ConcurrentBuildLimit: 1
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref DeployLogGroup
+Outputs:
+  SiteUrl:
+    Value: !Sub 'https://${Distribution.DomainName}'
+    Description: Frontend URL; add it to the API stack AllowedOrigin
+  DistributionId: {Value: !Ref Distribution, Description: CloudFront distribution}
+  SiteBucketName: {Value: !Ref SiteBucket, Description: Private frontend file bucket}
+  DeployProjectName: {Value: !Ref DeployProject, Description: CodeBuild project that deploys a pinned main commit}
