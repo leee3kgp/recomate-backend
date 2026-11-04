@@ -18,6 +18,9 @@ build/
 .project
 .settings/
 
+# Python (deployment and check scripts)
+__pycache__/
+
 # Logs
 *.log
 

@@ -51,6 +51,7 @@ API 주소는 스택 파라미터 `ApiBaseUrl`이 빌드 시 `VITE_API_BASE_URL`
 - 보안 헤더와 파일별 `Cache-Control`이 위 기준과 같습니다.
 - S3 버킷 주소로 직접 요청하면 거절됩니다.
 - 배포 주소를 Origin으로 한 API 사전 요청이 허용됩니다.
+- 위 항목은 [배포 환경 자동 점검](live-check.md)의 `scripts/live-check.py`가 함께 확인합니다(S3 직접 접근 제외). 배포 후 실행해 `SUMMARY`에 실패가 없는지 확인합니다.
 
 ## 배포 기록 (2026-11-03)
 

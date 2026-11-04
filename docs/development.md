@@ -119,6 +119,7 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 - [세션 조회·삭제 API](session-query-api.md)
 - ["이미 봤어요" 제외 API](exclusion-api.md)
 - [프론트엔드 배포](frontend-deployment.md)
+- [배포 환경 자동 점검](live-check.md)
 - [사용자 API와 세션 연결](session-integration.md)
 - [프론트·API 명세 호환성 점검 기록](frontend-container-review.md)
 - [Docker Desktop 설치 안내](https://docs.docker.com/desktop/setup/install/windows-install/)

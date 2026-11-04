@@ -157,6 +157,7 @@ Lambda 배포용 이미지는 단일 아키텍처로 만들고 provenance/SBOM a
 - 실제 API 경로와 `/api` 접두사 전달.
 - 정상 ID Token 및 누락·위조·만료 토큰의 인증 결과.
 - 프론트 Origin의 CORS, 공통 오류 응답, 실제 데이터 저장·삭제와 실행 권한.
+- 실제 API 흐름은 배포 후 [배포 환경 자동 점검](live-check.md)의 `scripts/live-check.py`로 다시 확인합니다.
 
 기존 `/jwt-test/auth-test` MOCK 테스트와 실제 서비스 API 검증은 별개입니다. [컨테이너 CI](../.github/workflows/container-check.yml)는 빌드·테스트·일반 컨테이너 기동을 검사하며, Lambda 이벤트 변환과 FE 통합 테스트는 실제 개발용 배포에서 추가로 확인해야 합니다.
 
