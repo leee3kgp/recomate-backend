@@ -38,7 +38,7 @@ macOS·Linux에서는 `Scripts/python` 대신 `bin/python`을 사용합니다.
 | `--api-base` | dev API Stage 주소 | 점검할 API |
 | `--site-url` | `https://d15wymuj9qezfe.cloudfront.net` | 프론트 주소. `""`이면 사이트 점검 생략 |
 | `--origin` | 사이트 주소, `http://localhost:5173` | CORS 허용을 기대하는 주소. 여러 번 지정 가능 |
-| `--skip-recommendation` | 꺼짐 | TMDB를 호출하는 추천 생성·제외 점검 생략 |
+| `--skip-recommendation` | 꺼짐 | TMDB를 호출하는 추천 생성·제외 점검 생략 (회원·비회원 모두) |
 | `--profile`, `--region` | `recomate`, `ap-southeast-2` | AWS 자격 증명 |
 
 마지막 줄 `SUMMARY 69/69 passed`처럼 실패가 없으면 종료 코드 0, 하나라도 실패하면 실패 항목을 출력하고 1을 반환합니다.
