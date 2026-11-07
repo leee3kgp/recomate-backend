@@ -118,11 +118,12 @@ def check_site(c, args, http):
 def check_unauthenticated(c, args, http):
     c.section("routes without a token")
     session = f"/api/sessions/{SAMPLE_SESSION}"
-    routes = [("GET", "/api/users/me"), ("PATCH", "/api/users/me"), ("DELETE", "/api/users/me"),
-              ("GET", "/api/users/me/genres"), ("PUT", "/api/users/me/genres"), ("GET", "/api/genres"),
-              ("GET", "/api/sessions"), ("POST", "/api/sessions"), ("GET", session), ("DELETE", session),
-              ("POST", session + "/recommendations"), ("POST", session + "/exclusions")]
-    for method, path in routes:
+    protected = [("GET", "/api/users/me"), ("PATCH", "/api/users/me"), ("DELETE", "/api/users/me"),
+                 ("GET", "/api/users/me/genres"), ("PUT", "/api/users/me/genres"),
+                 ("GET", "/api/sessions"), ("POST", "/api/sessions"), ("GET", session), ("DELETE", session),
+                 ("POST", session + "/recommendations"), ("POST", session + "/exclusions")]
+    routes = protected + [("GET", "/api/genres"), ("POST", "/api/guest/recommendations")]
+    for method, path in protected:
         r = http.request(method, args.api_base + path, json={} if method in ("POST", "PUT", "PATCH") else None, timeout=60)
         c.check(f"{method} {path} rejects missing token", r.status_code == 401, r.status_code)
     for origin in args.origins:
@@ -136,6 +137,38 @@ def check_unauthenticated(c, args, http):
     r = http.options(args.api_base + "/api/users/me", timeout=60, headers={
         "Origin": "https://not-allowed.example.com", "Access-Control-Request-Method": "GET"})
     c.check("CORS preflight rejected for an unlisted origin", r.status_code == 403, r.status_code)
+    check_guest(c, args, http)
+
+
+def check_guest(c, args, http):
+    """Public routes: guests read genres and get a TOP 3 that is never stored (one TMDB-backed call each)."""
+    c.section("guest routes without a token")
+    origin = args.origins[0]
+    r = http.get(args.api_base + "/api/genres", headers={"Origin": origin}, timeout=60)
+    codes = [g.get("code") for g in r.json().get("genres", [])] if r.status_code == 200 else []
+    c.check("guest reads the genre catalog", sorted(codes) == sorted(GENRES), r.status_code)
+    c.check("guest catalog response allows the frontend origin", r.headers.get("Access-Control-Allow-Origin") == origin)
+    body = {"participantCount": 2, "participants": [{"index": 1, "genres": ["SF", "ACTION"]},
+                                                    {"index": 2, "genres": ["COMEDY"]}]}
+    r = http.post(args.api_base + "/api/guest/recommendations", headers={"Origin": origin}, json=body, timeout=60)
+    data = r.json() if r.status_code == 200 else {}
+    shown = data.get("recommendations", [])
+    c.check("guest gets recommendations without a token", r.status_code == 200 and 0 < len(shown) <= 3
+            and "analysis" in data, r.status_code)
+    c.check("guest response has no session id and is not cached", "sessionId" not in data
+            and "no-store" in r.headers.get("Cache-Control", ""))
+    if shown:
+        seen = {"tmdbId": shown[0]["tmdbId"], "mediaType": shown[0]["mediaType"]}
+        r = http.post(args.api_base + "/api/guest/recommendations", json=dict(body, excluded=[seen]), timeout=60)
+        keys = [(t.get("tmdbId"), t.get("mediaType")) for t in r.json().get("recommendations", [])] if r.status_code == 200 else None
+        c.check("guest 'already watched' title is left out", keys is not None
+                and (seen["tmdbId"], seen["mediaType"]) not in keys, r.status_code)
+    r = http.post(args.api_base + "/api/guest/recommendations", timeout=60, json={
+        "participantCount": 3, "participants": body["participants"]})
+    c.check("guest invalid participants rejected", r.status_code == 400, r.status_code)
+    r = http.post(args.api_base + "/api/guest/recommendations", headers={"Authorization": "Bearer not-a-jwt"},
+                  json=body, timeout=60)
+    c.check("guest route still rejects an invalid token", r.status_code == 401, r.status_code)
 
 
 def check_user_flow(c, args, http, ddb, user):

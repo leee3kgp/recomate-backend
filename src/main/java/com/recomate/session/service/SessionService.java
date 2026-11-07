@@ -36,12 +36,9 @@ public class SessionService {
     }
 
     public RecommendationSession createSession(String userId, CreateSessionRequest request) {
-        validate(request);
+        var participants = participants(request);
         // Initialize the profile first; the repository atomically rechecks ACTIVE when writing.
         users.profile(userId);
-        var participants = request.participants().stream().sorted(Comparator.comparing(ParticipantRequest::index))
-                .map(p -> new Participant(p.index(), p.genres().stream().distinct().toList()))
-                .collect(Collectors.toCollection(ArrayList::new));
         var session = new RecommendationSession();
         session.setSessionId(UUID.randomUUID().toString());
         session.setUserId(userId);
@@ -57,7 +54,15 @@ public class SessionService {
         if (!repository.deleteOwned(userId, SessionIds.parse(rawId))) throw ApiException.notFound();
     }
 
-    private void validate(CreateSessionRequest request) {
+    /** Validated participants in index order with duplicate genres removed; shared with guest recommendations. */
+    static ArrayList<Participant> participants(CreateSessionRequest request) {
+        validate(request);
+        return request.participants().stream().sorted(Comparator.comparing(ParticipantRequest::index))
+                .map(p -> new Participant(p.index(), p.genres().stream().distinct().toList()))
+                .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    private static void validate(CreateSessionRequest request) {
         if (request == null || request.participantCount() == null || request.participantCount() < 2
                 || request.participantCount() > 6 || request.participants() == null) {
             throw new InvalidRequestException("참여 인원은 2~6명이어야 합니다.");

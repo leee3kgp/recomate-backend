@@ -45,8 +45,18 @@ status=$(curl --silent --output /dev/null --dump-header "$headers" --write-out '
   --header 'Access-Control-Request-Headers: authorization,content-type' http://localhost:18080/api/sessions)
 [ "$status" = 200 ]
 grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
+# Guests can read the catalog and reach the guest route; a bad body is rejected before any TMDB call.
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:18080/api/genres)
-[ "$status" = 401 ]
+[ "$status" = 200 ]
+status=$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST \
+  --header 'Content-Type: application/json' --data '{"participantCount":3,"participants":[{"index":1,"genres":["SF"]},{"index":2,"genres":["SF"]}]}' \
+  http://localhost:18080/api/guest/recommendations)
+[ "$status" = 400 ]
+status=$(curl --silent --output /dev/null --dump-header "$headers" --write-out '%{http_code}' \
+  --request OPTIONS --header "Origin: $origin" --header 'Access-Control-Request-Method: POST' \
+  --header 'Access-Control-Request-Headers: content-type' http://localhost:18080/api/guest/recommendations)
+[ "$status" = 200 ]
+grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
 status=$(curl --silent --output /dev/null --dump-header "$headers" --write-out '%{http_code}' \
   --request OPTIONS --header "Origin: $origin" --header 'Access-Control-Request-Method: GET' \
   --header 'Access-Control-Request-Headers: authorization' http://localhost:18080/api/genres)
@@ -74,4 +84,4 @@ for route in "DELETE $session" "POST $session/recommendations" "POST $session/ex
   [ "$status" = 200 ]
   grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
 done
-echo 'Read-only container started; user/session/recommendation/exclusion/genre authentication=401, CORS preflights=200.'
+echo 'Read-only container started; user/session/recommendation/exclusion authentication=401, public genres=200, guest validation=400, CORS preflights=200.'

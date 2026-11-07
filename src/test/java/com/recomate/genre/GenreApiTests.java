@@ -72,11 +72,11 @@ class GenreApiTests {
     }
 
     @Test
-    void missingAuthenticationCannotReadTheCatalog() throws Exception {
+    void guestsReadTheCatalogWithoutLoginOrStorageAccess() throws Exception {
         mvc.perform(get("/api/genres").header("Origin", "http://localhost:5173"))
-                .andExpect(status().isUnauthorized())
+                .andExpect(status().isOk())
                 .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:5173"))
-                .andExpect(jsonPath("$.error.code").value("UNAUTHORIZED"));
+                .andExpect(jsonPath("$.genres.length()").value(10));
         verifyNoInteractions(users, identities, sessions);
     }
 
