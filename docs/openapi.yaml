@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecoMate User, Session and Genre API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
     The response fields, nickname handling and withdrawal lifecycle below are the confirmed
@@ -36,6 +36,10 @@ info:
     stores up to 20 unranked next candidates, so exclusions never call TMDB. The exclusion flow,
     regeneration block, withdrawal cleanup and all route preflights passed 23 live checkpoints
     plus a 12-route 401/CORS sweep in the development deployment on 2026-11-03.
+    Guests (no login) can read GET /api/genres and call POST /api/guest/recommendations.
+    The guest route returns a TOP 3 with the member scoring and stores nothing; the guest's
+    "이미 봤어요" titles are sent back in each request instead of being recorded. Every other
+    route still requires the Cognito ID Token.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
@@ -46,13 +50,14 @@ paths:
     get:
       operationId: listGenres
       summary: Get the ten supported RecoMate genres
+      security: [{}, {CognitoIdToken: []}]
       description: |
         Returns genre master v1 as code/name pairs in this fixed order: ACTION, COMEDY,
         ROMANCE, DRAMA, SF, FANTASY, HORROR, CRIME, MYSTERY, ANIMATION.
         No request body or parameters are required. Does not create a user profile,
-        change preferences, or call Cognito/TMDB to obtain the list. Authentication
-        and the shared DynamoDB user-status check still apply; withdrawing/withdrawn
-        users are rejected. A user without an app profile can read the catalog.
+        change preferences, or call Cognito/TMDB to obtain the list. Public so guests can
+        pick genres; a token that is sent must still be valid, and withdrawing/withdrawn
+        users sending their token are rejected. A user without an app profile can read the catalog.
       responses:
         '200':
           description: Complete genre catalog; exactly ten entries
@@ -71,8 +76,69 @@ paths:
                   - { code: CRIME, name: 범죄 }
                   - { code: MYSTERY, name: 미스터리 }
                   - { code: ANIMATION, name: 애니메이션 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '401':
+          description: UNAUTHORIZED - only when an invalid/expired token or a withdrawing/withdrawn user's token is sent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /api/guest/recommendations:
+    post:
+      operationId: createGuestRecommendations
+      summary: TOP 3 for visitors without an account; nothing is stored
+      security: [{}]
+      description: |
+        Same participant input and scoring as a member session, answered in one call.
+        No session, result, candidate or exclusion is written, and no user profile is read
+        or created. excluded carries the titles the guest marked "이미 봤어요" in the browser
+        (matched by mediaType and tmdbId together); they are skipped and the best next titles
+        fill their places in score order, with participantMatch recomputed for the shown titles.
+        Unlike members (stored candidates), each guest call queries TMDB again, so other titles
+        can also change if TMDB popularity moved in between.
+        Each call reaches TMDB, so the API Gateway Stage throttles this method more tightly
+        (rate 2/s, burst 5) than member routes. Send no Authorization header; an invalid
+        token is rejected like on every other route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GuestRecommendationRequest' }
+            example:
+              participantCount: 2
+              participants:
+                - { index: 1, genres: [SF, ACTION] }
+                - { index: 2, genres: [COMEDY] }
+              excluded:
+                - { tmdbId: 603, mediaType: movie }
+      responses:
+        '200':
+          description: Results generated and returned only
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuestRecommendationResult' }
+        '400':
+          description: VALIDATION_ERROR (malformed JSON, count/size bounds, excluded over 20, bad tmdbId/mediaType) or INVALID_REQUEST (count mismatch, duplicate index, unknown genre code); TMDB is not called
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: UNAUTHORIZED - only when an invalid token is sent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: THROTTLED - API Gateway rate limit for this public route
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '502':
+          description: UPSTREAM_ERROR - TMDB could not be reached or rejected the request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /api/sessions:
     get:
       operationId: listMySessions
@@ -497,6 +563,24 @@ components:
       properties:
         tmdbId: { type: integer, minimum: 1 }
         mediaType: { type: string, enum: [movie, tv] }
+    GuestRecommendationRequest:
+      type: object
+      required: [participantCount, participants]
+      properties:
+        participantCount: { $ref: '#/components/schemas/CreateSessionRequest/properties/participantCount' }
+        participants: { $ref: '#/components/schemas/CreateSessionRequest/properties/participants' }
+        excluded:
+          type: array
+          maxItems: 20
+          description: Titles the guest marked "이미 봤어요"; kept only by the browser and resent each time
+          items: { $ref: '#/components/schemas/ExclusionRequest' }
+    GuestRecommendationResult:
+      type: object
+      additionalProperties: false
+      required: [recommendations, analysis]
+      properties:
+        recommendations: { $ref: '#/components/schemas/Session/properties/recommendations' }
+        analysis: { $ref: '#/components/schemas/StoredAnalysis' }
     StoredRecommendation:
       type: object
       additionalProperties: false
