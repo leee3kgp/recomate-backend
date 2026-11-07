@@ -36,17 +36,20 @@ Authorization: Bearer <Cognito ID Token>
 
 ## 인증과 오류
 
+비회원도 장르를 골라야 하므로 목록 조회는 로그인 없이 됩니다([비회원 추천 API](guest-recommendation-api.md)). 토큰을 보낸 경우에는 아래 검사를 그대로 합니다.
+
 | 조건 | 상태 코드 | 오류 코드 |
 | --- | --- | --- |
-| 토큰 누락·형식 오류·만료·위조·다른 앱 또는 Access Token 사용 | 401 | UNAUTHORIZED |
-| 사용자 상태가 DELETING 또는 DELETED | 401 | UNAUTHORIZED |
+| 토큰 없음 | 200 | - |
+| 보낸 토큰이 형식 오류·만료·위조·다른 앱 또는 Access Token | 401 | UNAUTHORIZED |
+| 토큰을 보낸 사용자 상태가 DELETING 또는 DELETED | 401 | UNAUTHORIZED |
 | 공통 사용자 접근 검사 중 저장소 오류 | 500 | INTERNAL_ERROR |
 
 오류 JSON은 기존 `{ "error": { "code": "...", "message": "..." } }` 형식을 따릅니다. 상세 스키마는 [OpenAPI](openapi.yaml)를 참고합니다.
 
 목록은 공통 `Genre` 정의에서 가져오므로 별도 장르 테이블·TMDB 호출은 없습니다. 다만 기존 보안 필터가 탈퇴 상태를 확인하기 위해 사용자 테이블을 읽으므로, 로컬에서 실제 API를 호출하려면 해당 테이블에 대한 AWS 접근 설정이 필요합니다. 앱 프로필이 없는 사용자는 목록을 조회할 수 있고, 조회 중 프로필 생성이나 Cognito 초기 닉네임 확인은 하지 않습니다.
 
-허용된 FE Origin의 `OPTIONS /api/genres` 사전 요청은 토큰 없이 처리합니다. 실제 GET은 인증이 필요합니다. 허용 Origin 설정은 기존 `CORS_ALLOWED_ORIGINS`를 사용합니다.
+허용된 FE Origin의 `OPTIONS /api/genres` 사전 요청과 GET은 토큰 없이 처리합니다. 허용 Origin 설정은 기존 `CORS_ALLOWED_ORIGINS`를 사용합니다.
 
 ## 개인 선호 장르와의 차이
 
@@ -60,9 +63,9 @@ Authorization: Bearer <Cognito ID Token>
 
 ## 배포·연동
 
-`infra/user-api.yaml`에 기존 사용자 API와 같은 Lambda로 연결되는 장르 GET·OPTIONS, Cognito Authorizer, 경로를 제한한 호출 권한을 추가했습니다. 새 경로를 Stage에 반영하도록 API Deployment 스냅샷도 갱신합니다. 실제 배포 순서는 [컨테이너 배포](container-deployment.md)를 따릅니다.
+`infra/user-api.yaml`에 기존 사용자 API와 같은 Lambda로 연결되는 장르 GET·OPTIONS, Cognito Authorizer, 경로를 제한한 호출 권한을 추가했습니다. 새 경로를 Stage에 반영하도록 API Deployment 스냅샷도 갱신합니다. 실제 배포 순서는 [컨테이너 배포](container-deployment.md)를 따릅니다. 이후 [비회원 추천](guest-recommendation-api.md) 작업에서 GET의 Cognito Authorizer를 빼 공개 경로로 바꿨습니다.
 
-프론트는 `genres.js`의 고정 목록 대신 인증된 요청으로 받은 `genres`를 사용하도록 별도 연결해야 합니다. AWS 배포·실제 호출 검증은 아래 기록을 따르며 FE 화면 연결은 별도 작업입니다. 사용자 API와 공유 RecommendationSession 연결은 최신 main에서 반영했으며 세션 생성·추천 저장의 ACTIVE 조건 트랜잭션도 유지합니다.
+프론트는 `genres.js`에서 토큰 없이 받은 `genres`를 사용하고, 받지 못하면 고정 목록을 씁니다. AWS 배포·실제 호출 검증은 아래 기록을 따르며 FE 화면 연결은 별도 작업입니다. 사용자 API와 공유 RecommendationSession 연결은 최신 main에서 반영했으며 세션 생성·추천 저장의 ACTIVE 조건 트랜잭션도 유지합니다.
 
 장르 배포 템플릿은 사용자·세션·장르 메서드 전체를 포함하는 ApiDeploymentGenreCatalogV1 스냅샷으로 기존 dev Stage를 갱신했습니다. 기존 #6 이미지는 아래 새 이미지로 갱신했고 사용자·세션 테이블과 데이터 권한은 유지했습니다.
 
