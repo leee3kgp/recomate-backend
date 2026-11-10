@@ -62,6 +62,14 @@ status=$(curl --silent --output /dev/null --dump-header "$headers" --write-out '
   --header 'Access-Control-Request-Headers: authorization' http://localhost:18080/api/genres)
 [ "$status" = 200 ]
 grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
+# The popular list needs a login: no token is 401 and the browser preflight is allowed. A real list needs a TMDB token.
+status=$(curl --silent --output /dev/null --write-out '%{http_code}' 'http://localhost:18080/api/popular?genre=ACTION&country=KR')
+[ "$status" = 401 ]
+status=$(curl --silent --output /dev/null --dump-header "$headers" --write-out '%{http_code}' \
+  --request OPTIONS --header "Origin: $origin" --header 'Access-Control-Request-Method: GET' \
+  --header 'Access-Control-Request-Headers: authorization' http://localhost:18080/api/popular)
+[ "$status" = 200 ]
+grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
 for path in /api/sessions /api/sessions/01234567-89ab-4cde-8fab-0123456789ab; do
   status=$(curl --silent --output /dev/null --write-out '%{http_code}' "http://localhost:18080$path")
   [ "$status" = 401 ]
@@ -84,4 +92,4 @@ for route in "DELETE $session" "POST $session/recommendations" "POST $session/ex
   [ "$status" = 200 ]
   grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
 done
-echo 'Read-only container started; user/session/recommendation/exclusion authentication=401, public genres=200, guest validation=400, CORS preflights=200.'
+echo 'Read-only container started; user/session/recommendation/exclusion/popular authentication=401, public genres=200, guest validation=400, CORS preflights=200.'

@@ -54,6 +54,29 @@ public class RestClientTmdbClient implements TmdbClient {
         }
     }
 
+    @Override
+    public List<TmdbContent> discoverPopular(ContentType type, Genre genre, String country) {
+        List<Integer> ids = genre == null ? List.of() : TmdbGenreMapper.idsFor(type, List.of(genre));
+        if (genre != null && ids.isEmpty()) return List.of(); // 이 매체에 매핑이 없는 장르 (예: TV의 로맨스·공포)
+        try {
+            DiscoverResponse body = http.get().uri(uriBuilder -> {
+                uriBuilder.path("/discover/{type}")
+                        .queryParam("language", "ko-KR")
+                        .queryParam("sort_by", "popularity.desc")
+                        .queryParam("vote_count.gte", 200)
+                        .queryParam("include_adult", false)
+                        .queryParam("page", 1);
+                if (!ids.isEmpty()) uriBuilder.queryParam("with_genres", ids.get(0));
+                if (country != null) uriBuilder.queryParam("with_origin_country", country);
+                return uriBuilder.build(type.value());
+            }).retrieve().body(DiscoverResponse.class);
+            if (body == null || body.results() == null) return List.of();
+            return body.results().stream().map(item -> toContent(type, item)).toList();
+        } catch (RestClientException e) {
+            throw ApiException.upstream();
+        }
+    }
+
     private static TmdbContent toContent(ContentType type, Item item) {
         boolean movie = type == ContentType.MOVIE;
         String date = movie ? item.releaseDate() : item.firstAirDate();

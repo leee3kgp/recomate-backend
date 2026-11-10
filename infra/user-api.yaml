@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy user, session and genre APIs behind the existing Cognito authorizer, plus the public genre catalog and stateless guest recommendations, using shared session storage and a digest-pinned Lambda image.
+Description: Deploy user, session and genre APIs behind the existing Cognito authorizer, plus the public genre catalog, stateless guest recommendations and the authenticated popular list, using shared session storage and a digest-pinned Lambda image.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -19,6 +19,9 @@ Metadata:
         scope: shared
       - at: docs/guest-recommendation-api.md
         has: Public stateless guest TOP 3 and the public genre catalog
+        scope: shared
+      - at: docs/popular-api.md
+        has: Authenticated popular list with genre and country filters and short in-memory caching
         scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
@@ -280,6 +283,46 @@ Resources:
     Properties:
       RestApiId: !Ref RestApiId
       ResourceId: !Ref GuestRecommendationsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  PopularResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Serve the cached popular list to logged-in members only.
+        must: [Keep this route under the existing API prefix.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: popular}
+  PopularGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Popular list requires login; guests see a blurred preview in the frontend only.
+        must: [Keep authentication enabled., Preserve query parameters in the proxy request.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref PopularResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  PopularOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref PopularResource
       HttpMethod: OPTIONS
       AuthorizationType: NONE
       Integration:
@@ -606,6 +649,18 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/guest/recommendations'
+  PopularInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow popular list GET and preflight without widening other route permissions.
+        must: ['Restrict invocation to this project, API, Stage and popular path.']
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/popular'
   SessionDetailInvokePermission:
     Type: AWS::Lambda::Permission
     Metadata:
@@ -664,21 +719,21 @@ Resources:
         gatewayresponse.header.Content-Type: "'application/json'"
       ResponseTemplates:
         application/json: '{"error":{"code":"$context.error.responseType","message":"요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."}}'
-  ApiDeploymentGuestRecommendationsV1:
+  ApiDeploymentPopularV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish the public guest recommendation route and public genre catalog alongside all existing methods and gateway responses.
+        why: Publish the authenticated popular list route alongside the public guest recommendation route, public genre catalog, all existing methods and gateway responses.
         must: [Wait for all methods and gateway responses., Change the logical ID for future route or response changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, GuestRecommendationsPost, GuestRecommendationsOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, GuestRecommendationsPost, GuestRecommendationsOptions, PopularGet, PopularOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate APIs with public guest recommendations and genre catalog
+      Description: RecoMate APIs with the popular list, public guest recommendations and genre catalog
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentGuestRecommendationsV1
+      DeploymentId: !Ref ApiDeploymentPopularV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'
