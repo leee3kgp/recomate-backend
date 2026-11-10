@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy user, session and genre APIs behind the existing Cognito authorizer, using shared session storage and a digest-pinned Lambda image.
+Description: Deploy user, session and genre APIs behind the existing Cognito authorizer, plus the public genre catalog and stateless guest recommendations, using shared session storage and a digest-pinned Lambda image.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -16,6 +16,9 @@ Metadata:
         scope: shared
       - at: docs/session-query-api.md
         has: Owned session reads, bounded index pagination and legacy response compatibility
+        scope: shared
+      - at: docs/guest-recommendation-api.md
+        has: Public stateless guest TOP 3 and the public genre catalog
         scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
@@ -214,14 +217,13 @@ Resources:
     Type: AWS::ApiGateway::Method
     Metadata:
       com.aws.cloudformation.Context:
-        why: Serve the fixed genre master through the existing authenticated Spring application.
-        must: [Apply the existing Cognito authorizer., Preserve the full API path in Lambda proxy requests.]
+        why: Serve the fixed genre master to guests and members; it holds no user data.
+        must: [Keep this method public so guests can pick genres., Preserve the full API path in Lambda proxy requests.]
     Properties:
       RestApiId: !Ref RestApiId
       ResourceId: !Ref GenreCatalogResource
       HttpMethod: GET
-      AuthorizationType: COGNITO_USER_POOLS
-      AuthorizerId: !Ref CognitoAuthorizerId
+      AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -231,11 +233,53 @@ Resources:
     Type: AWS::ApiGateway::Method
     Metadata:
       com.aws.cloudformation.Context:
-        why: Let Spring validate browser preflight origins before an authenticated catalog request.
-        must: [Keep preflight unauthenticated; catalog GET remains protected.]
+        why: Let Spring validate browser preflight origins before a catalog request.
+        must: [Keep preflight unauthenticated.]
     Properties:
       RestApiId: !Ref RestApiId
       ResourceId: !Ref GenreCatalogResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  GuestResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: guest}
+  GuestRecommendationsResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Give visitors without an account a TOP 3 that the application never stores.
+        must: [Keep this path separate from owned session routes.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref GuestResource, PathPart: recommendations}
+  GuestRecommendationsPost:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Public guest recommendation; Spring validates input and writes nothing.
+        must: [Keep this method unauthenticated., Keep the tighter Stage throttling for this method.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GuestRecommendationsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  GuestRecommendationsOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref GuestRecommendationsResource
       HttpMethod: OPTIONS
       AuthorizationType: NONE
       Integration:
@@ -550,6 +594,18 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/genres'
+  GuestRecommendationsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow guest recommendation POST and preflight without widening session route permissions.
+        must: ['Restrict invocation to this project, API, Stage and guest path.']
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/guest/recommendations'
   SessionDetailInvokePermission:
     Type: AWS::Lambda::Permission
     Metadata:
@@ -608,27 +664,33 @@ Resources:
         gatewayresponse.header.Content-Type: "'application/json'"
       ResponseTemplates:
         application/json: '{"error":{"code":"$context.error.responseType","message":"요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."}}'
-  ApiDeploymentSessionExclusionsV1:
+  ApiDeploymentGuestRecommendationsV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish the session exclusion route (#18) alongside all existing methods and gateway responses.
+        why: Publish the public guest recommendation route and public genre catalog alongside all existing methods and gateway responses.
         must: [Wait for all methods and gateway responses., Change the logical ID for future route or response changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, GuestRecommendationsPost, GuestRecommendationsOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate APIs with session exclusions and stack-managed gateway error responses
+      Description: RecoMate APIs with public guest recommendations and genre catalog
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentSessionExclusionsV1
+      DeploymentId: !Ref ApiDeploymentGuestRecommendationsV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'
           HttpMethod: '*'
           ThrottlingBurstLimit: 10
           ThrottlingRateLimit: 5
+          DataTraceEnabled: false
+        # Anyone can call the guest route and each call reaches TMDB, so it gets a lower limit than member routes.
+        - ResourcePath: '/~1api~1guest~1recommendations'
+          HttpMethod: POST
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 2
           DataTraceEnabled: false
 Outputs:
   ApiBaseUrl:
