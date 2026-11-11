@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecoMate User, Session and Genre API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
     The response fields, nickname handling and withdrawal lifecycle below are the confirmed
@@ -40,6 +40,9 @@ info:
     The guest route returns a TOP 3 with the member scoring and stores nothing; the guest's
     "이미 봤어요" titles are sent back in each request instead of being recorded. Every other
     route still requires the Cognito ID Token.
+    GET /api/popular (#24) lists popular movies and TV by optional genre and country filters.
+    It needs a login (401 otherwise); guests see only a blurred preview in the frontend.
+    Results are cached in instance memory for ten minutes per genre/country combination.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
@@ -133,6 +136,52 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '502':
+          description: UPSTREAM_ERROR - TMDB could not be reached or rejected the request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/popular:
+    get:
+      operationId: listPopular
+      summary: Popular movies and TV, optionally filtered by genre and country
+      description: |
+        Returns up to 20 titles, movies and TV merged and ordered by TMDB popularity. Both
+        filters are optional and may be combined; a blank value means no filter. genre is one
+        of the ten genre codes and country is a two-letter ISO 3166-1 code (KR, US, JP ...),
+        both case-insensitive. A genre with no TV mapping (ROMANCE, HORROR) returns movies only.
+        The applied filters are echoed back in upper case, or null when absent.
+        Requires a login; the shared user-status check rejects withdrawing/withdrawn users.
+        The list is identical for every user, so results are kept in instance memory for ten
+        minutes per genre/country combination. A TMDB failure is not cached.
+      parameters:
+        - name: genre
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/GenreCode' }
+        - name: country
+          in: query
+          required: false
+          description: Two-letter ISO 3166-1 alpha-2 country code of origin
+          schema: { type: string, pattern: '^[A-Za-z]{2}$', examples: [KR] }
+      responses:
+        '200':
+          description: Popular titles for the requested filters; items may be empty
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PopularList' }
+              example:
+                genre: ACTION
+                country: KR
+                items:
+                  - { id: 1399, type: tv, title: 예시 드라마, posterPath: /example.jpg, releaseYear: 2024, voteAverage: 8.1 }
+        '400':
+          description: VALIDATION_ERROR - unknown genre code or a country that is not a valid two-letter code; TMDB is not called
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/InternalError' }
         '502':
           description: UPSTREAM_ERROR - TMDB could not be reached or rejected the request
@@ -468,6 +517,35 @@ components:
           maxItems: 10
           uniqueItems: true
           items: { $ref: '#/components/schemas/GenreItem' }
+    PopularItem:
+      type: object
+      additionalProperties: false
+      required: [id, type, title, posterPath, releaseYear, voteAverage]
+      properties:
+        id: { type: integer, format: int64, description: TMDB id; unique only together with type }
+        type: { type: string, enum: [movie, tv] }
+        title: { type: string }
+        posterPath: { type: [string, 'null'], description: TMDB poster path, for example /abc.jpg }
+        releaseYear: { type: [integer, 'null'] }
+        voteAverage: { type: number }
+    PopularList:
+      type: object
+      additionalProperties: false
+      required: [genre, country, items]
+      properties:
+        genre:
+          oneOf:
+            - { $ref: '#/components/schemas/GenreCode' }
+            - { type: 'null' }
+          description: Applied genre filter, or null when none was given
+        country:
+          type: [string, 'null']
+          pattern: '^[A-Z]{2}$'
+          description: Applied country filter in upper case, or null when none was given
+        items:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/PopularItem' }
     CreateSessionRequest:
       type: object
       required: [participantCount, participants]
