@@ -66,4 +66,5 @@ Authorization: Bearer <Cognito ID Token>
 - `infra/user-api.yaml`: `/api/popular` 리소스, GET(Cognito Authorizer)·OPTIONS(인증 없음), 경로를 제한한 Lambda 호출 권한을 추가했습니다. 새 경로를 Stage에 반영하도록 배포 스냅샷을 `ApiDeploymentPopularV1`로 교체했습니다. Stage 호출 제한은 기존 기본값(초당 5회, 순간 10회)을 그대로 씁니다.
 - 자동 테스트: `PopularApiTests`가 토큰 없음·탈퇴 사용자 401, 필터 없는 조회와 정렬, 필터 정규화, TV 매핑 없는 장르, 빈 필터, 잘못된 장르·국가 400, TMDB 실패 502와 비캐시를 확인합니다. `PopularServiceTest`가 캐시 적중, 조합별 분리, 10분 만료, 정렬·20개 제한을 확인합니다.
 - 컨테이너 점검: `scripts/container-smoke.sh`가 토큰 없는 401과 사전 요청 200을 확인합니다. 컨테이너에는 TMDB 토큰이 없어 실제 목록은 배포 후 확인합니다.
-- 아직 하지 않은 일: AWS 배포와 [배포 환경 자동 점검](live-check.md)에 인기 목록 항목 추가는 배포 후 진행합니다.
+- dev 배포(2026-11-11): 토큰 없는 401, 사전 요청 200, 로그인 토큰의 필터·무필터 200, 잘못된 장르·국가 400, 캐시 적중을 실제 호출로 확인했습니다. 상세 기록은 [컨테이너 배포](container-deployment.md#인기-목록-api-배포-2026-11-11)를 참고합니다.
+- [배포 환경 자동 점검](live-check.md): 미인증 401·CORS 사전 요청, 잘못된 장르·국가 400, 필터·무필터 조회 200을 배포 때마다 확인합니다.

@@ -121,7 +121,7 @@ def check_unauthenticated(c, args, http):
     protected = [("GET", "/api/users/me"), ("PATCH", "/api/users/me"), ("DELETE", "/api/users/me"),
                  ("GET", "/api/users/me/genres"), ("PUT", "/api/users/me/genres"),
                  ("GET", "/api/sessions"), ("POST", "/api/sessions"), ("GET", session), ("DELETE", session),
-                 ("POST", session + "/recommendations"), ("POST", session + "/exclusions")]
+                 ("POST", session + "/recommendations"), ("POST", session + "/exclusions"), ("GET", "/api/popular")]
     routes = protected + [("GET", "/api/genres"), ("POST", "/api/guest/recommendations")]
     for method, path in protected:
         r = http.request(method, args.api_base + path, json={} if method in ("POST", "PUT", "PATCH") else None, timeout=60)
@@ -217,6 +217,8 @@ def check_user_flow(c, args, http, ddb, user):
     r = http.get(base + "/api/users/me", headers={"Authorization": f"Bearer {fresh}"}, timeout=60)
     c.check("token refreshed with the refresh token works", r.status_code == 200, r.status_code)
 
+    check_popular(c, args, http, user)
+
     c.section("sessions, recommendations and exclusions")
     r = http.post(base + "/api/sessions", headers=user.headers(), timeout=60, json={
         "participantCount": 2,
@@ -257,6 +259,29 @@ def check_user_flow(c, args, http, ddb, user):
     r = http.post(base + "/api/sessions", headers=user.headers(), timeout=60, json={
         "participantCount": 2, "participants": [{"index": 1, "genres": ["COMEDY"]}, {"index": 2, "genres": ["ANIMATION"]}]})
     return r.json().get("sessionId") if r.status_code == 201 else None
+
+
+def check_popular(c, args, http, user):
+    """Members-only popular list: bad filters are rejected before TMDB; each valid filter set is one TMDB-backed call."""
+    c.section("popular list")
+    url = args.api_base + "/api/popular"
+    for label, query in [("genre", "?genre=NOT_A_GENRE"), ("country", "?country=ZZZ")]:
+        r = http.get(url + query, headers=user.headers(), timeout=60)
+        c.check(f"popular list rejects an unknown {label}", r.status_code == 400
+                and error_code(r) == "VALIDATION_ERROR", r.status_code)
+    if args.skip_recommendation:
+        print("SKIP popular list checks (--skip-recommendation)")
+        return
+    origin = args.origins[0]
+    for label, query, genre, country in [("filtered", "?genre=ACTION&country=KR", "ACTION", "KR"),
+                                         ("unfiltered", "", None, None)]:
+        r = http.get(url + query, headers=user.headers(origin), timeout=60)
+        data = r.json() if r.status_code == 200 else {}
+        items = data.get("items", [])
+        c.check(f"{label} popular list returns 1-20 titles", r.status_code == 200 and 0 < len(items) <= 20
+                and (data.get("genre"), data.get("country")) == (genre, country)
+                and {i.get("type") for i in items} <= {"movie", "tv"}, f"{r.status_code}, {len(items)} titles")
+    c.check("popular response allows the frontend origin", r.headers.get("Access-Control-Allow-Origin") == origin)
 
 
 def check_withdrawal(c, args, http, ddb, user, kept_session):
