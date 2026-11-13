@@ -14,7 +14,8 @@ import requests
 from pycognito.aws_srp import AWSSRP
 
 PAGES = ["/", "/pages/index.html", "/pages/login.html", "/pages/signup.html", "/pages/verify-email.html",
-         "/pages/profile.html", "/pages/select.html", "/pages/result.html"]
+         "/pages/forgot-password.html", "/pages/reset-password.html", "/pages/profile.html", "/pages/start.html",
+         "/pages/select.html", "/pages/result.html", "/pages/terms.html", "/pages/privacy.html", "/pages/404.html"]
 GENRES = ["ACTION", "COMEDY", "ROMANCE", "DRAMA", "SF", "FANTASY", "HORROR", "CRIME", "MYSTERY", "ANIMATION"]
 SAMPLE_SESSION = "01234567-89ab-4cde-8fab-0123456789ab"
 
@@ -111,8 +112,12 @@ def check_site(c, args, http):
     c.check("version.json names the deployed commit", len(version.get("commit", "")) == 40,
             version.get("commit", r.status_code)[:12] if version else r.status_code)
     c.check("frontend build targets this API", version.get("apiBaseUrl") == args.api_base, version.get("apiBaseUrl"))
-    r = http.get(args.site_url + "/no-such-page-" + uuid.uuid4().hex[:6], timeout=30)
-    c.check("unknown path is 404", r.status_code == 404, r.status_code)
+    # CloudFront answers missing paths with the frontend's not-found page; compare bodies so wording changes don't matter
+    not_found_page = http.get(args.site_url + "/pages/404.html", timeout=30).text
+    for path in ("/no-such-page-", "/no-such-dir/a/b-"):
+        r = http.get(args.site_url + path + uuid.uuid4().hex[:6], timeout=30)
+        c.check(f"unknown path {path}… is 404 with the not-found page",
+                r.status_code == 404 and r.text == not_found_page, r.status_code)
 
 
 def check_unauthenticated(c, args, http):
