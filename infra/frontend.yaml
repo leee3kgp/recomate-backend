@@ -93,10 +93,10 @@ Resources:
           # Managed SecurityHeadersPolicy: HSTS, nosniff, frame SAMEORIGIN, referrer policy, XSS protection.
           ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
         CustomErrorResponses:
-          # A private bucket answers 403 for missing keys; show the home entry page with a 404 status.
+          # A private bucket answers 403 for missing keys; show the frontend's not-found page with a 404 status.
           - ErrorCode: 403
             ResponseCode: 404
-            ResponsePagePath: /index.html
+            ResponsePagePath: /pages/404.html
             ErrorCachingMinTTL: 10
         ViewerCertificate: {CloudFrontDefaultCertificate: true}
   SiteBucketPolicy:
@@ -193,6 +193,8 @@ Resources:
               commands:
                 - cd "$CODEBUILD_SRC_DIR/site" && VITE_API_BASE_URL="$API_BASE_URL" npm run build
                 - test -f "$CODEBUILD_SRC_DIR/site/dist/index.html" && test -f "$CODEBUILD_SRC_DIR/site/dist/pages/index.html"
+                # CloudFront serves this page for missing paths, so a build without it must not be published.
+                - test -f "$CODEBUILD_SRC_DIR/site/dist/pages/404.html" || { echo "dist/pages/404.html is missing"; exit 1; }
                 - printf '{"commit":"%s","builtAt":"%s","apiBaseUrl":"%s"}\n' "$FRONTEND_COMMIT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$API_BASE_URL" > "$CODEBUILD_SRC_DIR/site/dist/version.json"
                 - find "$CODEBUILD_SRC_DIR/site/dist" -type f | sort
             post_build:
