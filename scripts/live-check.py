@@ -14,8 +14,8 @@ import requests
 from pycognito.aws_srp import AWSSRP
 
 PAGES = ["/", "/pages/index.html", "/pages/login.html", "/pages/signup.html", "/pages/verify-email.html",
-         "/pages/forgot-password.html", "/pages/reset-password.html", "/pages/profile.html", "/pages/result.html",
-         "/pages/terms.html", "/pages/privacy.html", "/pages/404.html"]
+         "/pages/forgot-password.html", "/pages/reset-password.html", "/pages/profile.html", "/pages/start.html",
+         "/pages/select.html", "/pages/result.html", "/pages/terms.html", "/pages/privacy.html", "/pages/404.html"]
 GENRES = ["ACTION", "COMEDY", "ROMANCE", "DRAMA", "SF", "FANTASY", "HORROR", "CRIME", "MYSTERY", "ANIMATION"]
 SAMPLE_SESSION = "01234567-89ab-4cde-8fab-0123456789ab"
 
