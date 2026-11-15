@@ -8,6 +8,7 @@ import com.recomate.session.domain.RecommendationSession;
 import com.recomate.session.dto.CreateSessionRequest;
 import com.recomate.session.dto.ParticipantRequest;
 import com.recomate.session.repository.SessionRepository;
+import com.recomate.user.UserInput;
 import com.recomate.user.UserService;
 import java.time.Clock;
 import java.time.Instant;
@@ -58,7 +59,8 @@ public class SessionService {
     static ArrayList<Participant> participants(CreateSessionRequest request) {
         validate(request);
         return request.participants().stream().sorted(Comparator.comparing(ParticipantRequest::index))
-                .map(p -> new Participant(p.index(), p.genres().stream().distinct().toList()))
+                .map(p -> new Participant(p.index(), UserInput.participantName(p.name()),
+                        p.genres().stream().distinct().toList()))
                 .collect(Collectors.toCollection(ArrayList::new));
     }
 
