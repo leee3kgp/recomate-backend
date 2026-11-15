@@ -131,6 +131,21 @@ class TmdbRecommendationGeneratorTest {
     }
 
     @Test
+    void topThreeCoversEveryParticipantEvenWhenOneTasteHasLowerScores() {
+        var session = new RecommendationSession();
+        session.setParticipants(List.of(new Participant(1, List.of("ACTION")), new Participant(2, List.of("DRAMA"))));
+        TmdbClient tmdb = (type, genres) -> type == ContentType.MOVIE ? List.of(
+                content(1, type, Genre.ACTION), content(2, type, Genre.ACTION), content(3, type, Genre.ACTION),
+                new TmdbContent(4, type, "title4", null, 2020, 5.0, 1000, 5, Set.of(Genre.DRAMA))) : List.of();
+
+        var result = new TmdbRecommendationGenerator(tmdb, scorer).generate(session);
+
+        assertEquals(List.of(1L, 2L, 4L), result.recommendations().stream().map(r -> r.getTmdbId()).toList());
+        assertEquals(List.of(1, 2, 3), result.recommendations().stream().map(r -> r.getRank()).toList());
+        assertEquals(List.of(3L), result.candidates().stream().map(r -> r.getTmdbId()).toList());
+    }
+
+    @Test
     void candidateListIsBoundedForTheSessionItem() {
         List<TmdbContent> many = new ArrayList<>();
         for (long id = 1; id <= 40; id++) many.add(content(id, ContentType.MOVIE, Genre.SF));

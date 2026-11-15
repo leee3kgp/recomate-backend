@@ -42,12 +42,12 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
         participants.values().forEach(genres::addAll);
         List<TmdbContent> candidates = Stream.of(ContentType.values())
                 .flatMap(type -> tmdb.discover(type, genres).stream()).toList();
-        List<Scored> ranked = scorer.top(participants, candidates, LIMIT + CANDIDATE_LIMIT);
-        List<Scored> top = ranked.subList(0, Math.min(LIMIT, ranked.size()));
+        List<Scored> ranked = scorer.top(participants, candidates, Integer.MAX_VALUE);
+        List<Scored> top = scorer.pickBalanced(ranked, participants.keySet(), LIMIT);
         List<Recommendation> recommendations = IntStream.range(0, top.size())
                 .mapToObj(index -> recommendation(index + 1, top.get(index))).toList();
-        List<Recommendation> next = ranked.subList(top.size(), ranked.size()).stream()
-                .map(scored -> recommendation(null, scored)).toList();
+        List<Recommendation> next = ranked.stream().filter(scored -> !top.contains(scored))
+                .limit(CANDIDATE_LIMIT).map(scored -> recommendation(null, scored)).toList();
         return new Result(recommendations, analysis(participants, genresOf(top)), next);
     }
 
