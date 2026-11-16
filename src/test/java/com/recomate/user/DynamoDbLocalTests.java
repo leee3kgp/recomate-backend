@@ -400,7 +400,7 @@ class DynamoDbLocalTests {
         var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
         var service = new SessionService(repository, userService, Clock.systemUTC());
         var created = service.createSession(owner, new CreateSessionRequest(2,
-                List.of(new ParticipantRequest(1, List.of("ACTION")), new ParticipantRequest(2, List.of("SF")))));
+                List.of(new ParticipantRequest(1, null, List.of("ACTION")), new ParticipantRequest(2, null, List.of("SF")))));
         assertThat(UUID.fromString(created.getSessionId()).toString()).isEqualTo(created.getSessionId());
         assertThat(Instant.parse(created.getCreatedAt())).isNotNull();
         assertThat(storedSession(created.getSessionId()).get("recommendations").l()).isEmpty();

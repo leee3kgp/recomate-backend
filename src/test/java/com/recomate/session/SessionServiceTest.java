@@ -26,7 +26,7 @@ class SessionServiceTest {
     }
 
     private static ParticipantRequest p(int i, String... genres) {
-        return new ParticipantRequest(i, List.of(genres));
+        return new ParticipantRequest(i, null, List.of(genres));
     }
 
     @Test

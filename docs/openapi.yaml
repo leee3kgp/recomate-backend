@@ -109,7 +109,7 @@ paths:
             example:
               participantCount: 2
               participants:
-                - { index: 1, genres: [SF, ACTION] }
+                - { index: 1, name: 민수, genres: [SF, ACTION] }
                 - { index: 2, genres: [COMEDY] }
               excluded:
                 - { tmdbId: 603, mediaType: movie }
@@ -560,6 +560,10 @@ components:
             required: [index, genres]
             properties:
               index: { type: integer, minimum: 1, maximum: 6 }
+              name:
+                type: [string, 'null']
+                description: Optional display name. Trimmed (Unicode whitespace); a blank value is stored as null. Must be 1-10 Unicode code points after trimming; control characters are rejected with VALIDATION_ERROR.
+                x-normalized-max-length: 10
               genres:
                 type: array
                 minItems: 1
@@ -583,6 +587,7 @@ components:
             required: [index, genres]
             properties:
               index: { type: integer, minimum: 1, maximum: 6 }
+              name: { type: [string, 'null'], description: Participant display name; null when omitted }
               genres:
                 type: array
                 minItems: 1

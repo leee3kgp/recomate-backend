@@ -6,5 +6,6 @@ import java.util.List;
 
 public record ParticipantRequest(
         @NotNull Integer index,
+        String name,
         @NotEmpty List<String> genres) {
 }
