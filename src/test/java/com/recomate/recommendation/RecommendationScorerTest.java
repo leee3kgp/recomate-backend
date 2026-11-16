@@ -88,6 +88,39 @@ class RecommendationScorerTest {
         assertEquals(3, scorer.top(GROUP, many, 3).size());
     }
 
+    private List<Long> pickedIds(List<TmdbContent> contents, int limit) {
+        List<Scored> ranked = scorer.top(GROUP, contents, Integer.MAX_VALUE);
+        return scorer.pickBalanced(ranked, GROUP.keySet(), limit).stream().map(s -> s.content().id()).toList();
+    }
+
+    @Test
+    void pickBalancedIncludesLowerScoredContentThatCoversAnUncoveredParticipant() {
+        List<TmdbContent> contents = List.of(
+                content(1, 9.0, 50, Genre.ACTION), content(2, 8.5, 50, Genre.ACTION),
+                content(3, 8.0, 50, Genre.ACTION), content(4, 5.0, 5, Genre.DRAMA));
+
+        assertEquals(List.of(1L, 2L, 3L), scorer.top(GROUP, contents, 3).stream().map(s -> s.content().id()).toList());
+        assertEquals(List.of(1L, 2L, 4L), pickedIds(contents, 3));
+    }
+
+    @Test
+    void pickBalancedFallsBackToScoreOrderWhenNobodyMoreCanBeCovered() {
+        List<TmdbContent> contents = List.of(
+                content(1, 9.0, 50, Genre.ACTION), content(2, 8.5, 50, Genre.ACTION),
+                content(3, 8.0, 50, Genre.ACTION), content(4, 7.0, 50, Genre.ACTION));
+
+        assertEquals(List.of(1L, 2L, 3L), pickedIds(contents, 3));
+    }
+
+    @Test
+    void pickBalancedKeepsTopScoreFirstAndReturnsAtMostWhatExists() {
+        TmdbContent best = content(1, 9.5, 80, Genre.ACTION, Genre.DRAMA);
+        TmdbContent other = content(2, 5.0, 5, Genre.DRAMA);
+
+        assertEquals(List.of(1L, 2L), pickedIds(List.of(other, best), 3));
+        assertTrue(scorer.pickBalanced(List.of(), GROUP.keySet(), 3).isEmpty());
+    }
+
     @Test
     void scoreStaysWithinZeroToHundred() {
         Scored s = scorer.top(GROUP, List.of(content(9, 10.0, 100, Genre.ACTION, Genre.DRAMA)), 1).get(0);

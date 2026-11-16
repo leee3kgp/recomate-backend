@@ -2,6 +2,7 @@ package com.recomate.recommendation;
 
 import com.recomate.genre.Genre;
 import com.recomate.recommendation.tmdb.TmdbContent;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -37,6 +38,39 @@ public class RecommendationScorer {
                         .thenComparingLong(s -> s.content().id()))
                 .limit(limit)
                 .toList();
+    }
+
+    /**
+     * ranked(점수순)에서 limit개를 고른다. 1위는 최고 점수 작품이고, 이후에는 아직 일치하는 작품이 없는
+     * 참여자를 가장 많이 추가하는 작품을 우선한다(동점은 점수순). 더 챙길 참여자가 없으면 점수순으로 채운다.
+     * 결과는 점수 내림차순이다.
+     */
+    public List<Scored> pickBalanced(List<Scored> ranked, Collection<Integer> participants, int limit) {
+        List<Scored> pool = new ArrayList<>(ranked);
+        List<Scored> picked = new ArrayList<>();
+        Set<Integer> uncovered = new HashSet<>(participants);
+        while (picked.size() < limit && !pool.isEmpty()) {
+            Scored next = pool.get(0);
+            if (!picked.isEmpty()) {
+                int best = gain(next, uncovered);
+                for (Scored candidate : pool) {
+                    int gain = gain(candidate, uncovered);
+                    if (gain > best) {
+                        next = candidate;
+                        best = gain;
+                    }
+                }
+            }
+            picked.add(next);
+            pool.remove(next);
+            uncovered.removeAll(next.matchedParticipants());
+        }
+        picked.sort(Comparator.comparingDouble(Scored::score).reversed());
+        return picked;
+    }
+
+    private static int gain(Scored scored, Set<Integer> uncovered) {
+        return (int) scored.matchedParticipants().stream().filter(uncovered::contains).count();
     }
 
     private Scored score(Map<Integer, Set<Genre>> participants, TmdbContent content, double maxPopularity) {
