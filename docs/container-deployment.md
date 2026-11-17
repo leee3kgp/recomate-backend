@@ -4,7 +4,17 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## 본 작품 API 배포 (2026-11-16)
+
+[#36](https://github.com/leee3kgp/recomate-backend/issues/36)의 본 작품 테이블 `recomate-user-api-dev-watched`(키 `userId`+`contentKey`, 로컬 인덱스 `userId-watchedAt-index`, 사용량 기반 요금, 삭제 보호·PITR 켜짐, 스택 삭제 시 보존)와 `/api/users/me/watched`·`/api/users/me/watched/{mediaType}/{tmdbId}`·`/api/users/me/settings` 경로(Cognito Authorizer, OPTIONS는 인증 없음)를 반영하고 새 배포 스냅샷 `ApiDeploymentWatchedV1`을 dev Stage에 적용했습니다. 현재 dev 배포 ID는 `rl5w5l`입니다. 실행 역할에는 본 작품 테이블과 그 인덱스의 `Query`·`PutItem`·`DeleteItem`·`BatchWriteItem`만 추가했고, Lambda 환경 변수에 `WATCHED_TABLE`을 추가했습니다. Lambda 호출 권한은 기존 `/api/users/me*` 범위를 사용합니다. 사용자·세션 테이블, Cognito, CORS, TMDB 토큰(`UsePreviousValue`), Stage 호출 제한은 변경하지 않았습니다.
+
+현재 이미지는 `feature/watched-api` 작업 트리 기준 `src-2bfaea9733bddde6`, digest `sha256:4baf40919f0941da03a3fb672b6a3c1d55b0c2012a1630f4bf20ca0073b632fa`입니다. CodeBuild `71543bb2-ba66-4762-842e-1638861d0986`의 빌드·테스트·읽기 전용 컨테이너 검사(새 경로 미인증 401·사전 요청 200 포함)가 통과했습니다. 배포 전 DynamoDB Local을 포함한 테스트 253개, cfn-lint 1.58.0 오류·경고 0개, 선택한 Guard 규칙 6개 통과, OpenAPI 3.1 검증, IAM Policy Autopilot 0.3.0 권한 대조를 확인했습니다. 변경 계획 `watched-api-src-2bfaea9733bddde6`에서 교체되는 리소스가 없음을 확인한 뒤 적용했고 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 기존 메서드 22개는 Lambda ARN 참조로 변경 후보에 표시됐지만 실제 변경은 없었습니다.
+
+배포 후 [배포 환경 자동 점검](live-check.md) 113개를 모두 통과했습니다. "이미 봤어요"한 작품의 본 작품 자동 저장, 새 추천에서 본 작품 제외, TMDB 정보 저장·없는 작품 404, 삭제, 설정 변경, 탈퇴 후 본 작품 삭제를 실제 호출로 확인했고 임시 사용자 2명은 정리했습니다. ECR 기본 스캔은 기반 Ubuntu 패키지(`glibc`, `pcre2`, `apt`, `perl`)에서 HIGH 14·MEDIUM 16·LOW 8개를 보고했습니다. 이전 배포 대비 늘어난 HIGH 3개는 기반 이미지의 `glibc`이며 앱 의존성과 무관합니다. 기반 이미지 갱신은 별도로 진행합니다. 이전 이미지 `sha256:86f06cfc…`는 ECR 보관 규칙 범위 안에 있어 되돌릴 수 있습니다.
+
 ## 인기 목록 API 배포 (2026-11-11)
+
+이 절은 당시 기록입니다. 현재 이미지는 위 본 작품 API 배포 결과를 따릅니다.
 
 [#24](https://github.com/leee3kgp/recomate-backend/issues/24)의 `GET /api/popular`(GET은 Cognito Authorizer, OPTIONS는 인증 없음)를 반영하고 새 배포 스냅샷 `ApiDeploymentPopularV1`을 dev Stage에 적용했습니다. 현재 dev 배포 ID는 `jbi0uq`입니다. Lambda 호출 권한은 `/api/popular` 경로로 제한해 추가했고, Stage 호출 제한·실행 역할·테이블·Cognito·CORS·TMDB 토큰은 변경하지 않았습니다. 인기 목록 캐시 보관 시간은 기본값 10분을 사용합니다.
 
@@ -14,7 +24,7 @@
 
 ## 비회원 추천 API 배포 (2026-11-07)
 
-이 절은 당시 기록입니다. 현재 이미지는 위 인기 목록 API 배포 결과를 따릅니다.
+이 절은 당시 기록입니다. 현재 이미지는 위 본 작품 API 배포 결과를 따릅니다.
 
 [#26](https://github.com/leee3kgp/recomate-backend/issues/26)의 `POST /api/guest/recommendations`(POST·OPTIONS 인증 없음)와 공개 `GET /api/genres`를 반영하고 새 배포 스냅샷 `ApiDeploymentGuestRecommendationsV1`을 dev Stage에 적용했습니다. 당시 dev 배포 ID는 `nozpie`입니다. 비회원 POST에만 Stage 호출 제한 초당 2회·순간 5회를 두고 나머지 경로는 초당 5회·순간 10회를 유지합니다. Lambda 호출 권한은 `/api/guest/recommendations` 경로로 제한해 추가했고, 실행 역할·테이블·Cognito·CORS·TMDB 토큰은 변경하지 않았습니다.
 
@@ -28,7 +38,7 @@
 
 ## "이미 봤어요" 제외 API 배포 (2026-11-03)
 
-이 절은 당시 기록입니다. 현재 이미지는 위 인기 목록 API 배포 결과를 따릅니다.
+이 절은 당시 기록입니다. 현재 이미지는 위 본 작품 API 배포 결과를 따릅니다.
 
 [#18](https://github.com/leee3kgp/recomate-backend/issues/18)의 `POST /api/sessions/{sessionId}/exclusions`와 OPTIONS를 추가하고 새 배포 스냅샷 `ApiDeploymentSessionExclusionsV1`을 dev Stage에 반영했습니다. 현재 dev 배포 ID는 `m0s661`입니다. Lambda 호출 권한은 기존 `/api/sessions/*` 범위, 실행 역할은 기존 세션 테이블 `UpdateItem`을 사용해 IAM·테이블·Cognito·CORS·TMDB 토큰은 변경하지 않았습니다.
 
