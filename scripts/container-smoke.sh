@@ -82,7 +82,7 @@ done
 session=/api/sessions/01234567-89ab-4cde-8fab-0123456789ab
 for route in "DELETE $session" "POST $session/recommendations" "POST $session/exclusions" \
     "GET /api/users/me/watched" "POST /api/users/me/watched" "DELETE /api/users/me/watched/movie/603" \
-    "GET /api/users/me/settings" "PATCH /api/users/me/settings"; do
+    "GET /api/users/me/settings" "PATCH /api/users/me/settings" "GET /api/contents/movie/603"; do
   method=${route% *}
   path=${route#* }
   status=$(curl --silent --output /dev/null --write-out '%{http_code}' --request "$method" \
@@ -94,4 +94,4 @@ for route in "DELETE $session" "POST $session/recommendations" "POST $session/ex
   [ "$status" = 200 ]
   grep -iq "^Access-Control-Allow-Origin: $origin" "$headers"
 done
-echo 'Read-only container started; user/session/recommendation/exclusion/popular/watched/settings authentication=401, public genres=200, guest validation=400, CORS preflights=200.'
+echo 'Read-only container started; user/session/recommendation/exclusion/popular/watched/settings/content-detail authentication=401, public genres=200, guest validation=400, CORS preflights=200.'

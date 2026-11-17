@@ -551,6 +551,11 @@ class DynamoDbLocalTests {
         var rest = watched.list(owner, 2, first.next());
         assertThat(rest.items()).extracting(WatchedItem::tmdbId).containsExactly(2L);
         assertThat(watched.keys(owner)).containsExactlyInAnyOrder("movie:1", "movie:2", "movie:3");
+        // The detail screen checks one title without reading the whole list or another user's titles.
+        assertThat(watched.contains(owner, "movie:2")).isTrue();
+        assertThat(watched.contains(owner, "movie:9")).isFalse();
+        assertThat(watched.contains(owner, "tv:2")).isFalse();
+        assertThat(watched.contains(other, "movie:9")).isTrue();
 
         watched.delete(owner, "movie:2");
         watched.delete(owner, "movie:2");

@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy user, watched-title, session and genre APIs behind the existing Cognito authorizer, plus the public genre catalog, stateless guest recommendations and the authenticated popular list, using shared session storage and a digest-pinned Lambda image.
+Description: Deploy user, watched-title, session and genre APIs behind the existing Cognito authorizer, plus the public genre catalog, stateless guest recommendations, the authenticated popular list and content detail, using shared session storage and a digest-pinned Lambda image.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -25,6 +25,9 @@ Metadata:
         scope: shared
       - at: docs/watched-api.md
         has: Per-user watched titles, the auto-exclude setting and their withdrawal cleanup
+        scope: shared
+      - at: docs/content-detail-api.md
+        has: Authenticated content detail from one TMDB call with short in-memory caching
         scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
@@ -357,6 +360,52 @@ Resources:
     Properties:
       RestApiId: !Ref RestApiId
       ResourceId: !Ref PopularResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  ContentsResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Group content routes under the existing API prefix.
+        must: [Keep this route under the existing API prefix.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ApiPrefix, PathPart: contents}
+  ContentTypeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ContentsResource, PathPart: '{mediaType}'}
+  ContentDetailResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref ContentTypeResource, PathPart: '{tmdbId}'}
+  ContentDetailGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Content detail requires login; guests see a login prompt in the frontend only.
+        must: [Keep authentication enabled.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref ContentDetailResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  ContentDetailOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref ContentDetailResource
       HttpMethod: OPTIONS
       AuthorizationType: NONE
       Integration:
@@ -848,6 +897,18 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/popular'
+  ContentDetailInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow content detail GET and preflight without widening other route permissions.
+        must: ['Restrict invocation to this project, API, Stage and content paths.']
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApiId}/${StageName}/*/api/contents/*'
   SessionDetailInvokePermission:
     Type: AWS::Lambda::Permission
     Metadata:
@@ -906,21 +967,21 @@ Resources:
         gatewayresponse.header.Content-Type: "'application/json'"
       ResponseTemplates:
         application/json: '{"error":{"code":"$context.error.responseType","message":"요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."}}'
-  ApiDeploymentWatchedV1:
+  ApiDeploymentContentDetailV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish the watched list and settings routes alongside the popular list, public guest recommendation route, public genre catalog, all existing methods and gateway responses.
+        why: Publish the content detail route alongside watched titles and settings, the popular list, public guest recommendation route, public genre catalog, all existing methods and gateway responses.
         must: [Wait for all methods and gateway responses., Change the logical ID for future route or response changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, GuestRecommendationsPost, GuestRecommendationsOptions, PopularGet, PopularOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, WatchedGet, WatchedPost, WatchedOptions, WatchedItemDelete, WatchedItemOptions, SettingsGet, SettingsPatch, SettingsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, GuestRecommendationsPost, GuestRecommendationsOptions, PopularGet, PopularOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, WatchedGet, WatchedPost, WatchedOptions, WatchedItemDelete, WatchedItemOptions, SettingsGet, SettingsPatch, SettingsOptions, ContentDetailGet, ContentDetailOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate APIs with watched titles and settings, the popular list, public guest recommendations and genre catalog
+      Description: RecoMate APIs with content detail, watched titles and settings, the popular list, public guest recommendations and genre catalog
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentWatchedV1
+      DeploymentId: !Ref ApiDeploymentContentDetailV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'
