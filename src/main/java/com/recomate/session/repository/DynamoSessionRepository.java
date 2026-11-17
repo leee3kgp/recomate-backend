@@ -5,6 +5,7 @@ import com.recomate.genre.Genre;
 import com.recomate.session.domain.Recommendation;
 import com.recomate.session.domain.RecommendationSession;
 import com.recomate.session.domain.SessionAnalysis;
+import com.recomate.watched.DynamoDbWatchedRepository;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -26,13 +27,16 @@ public class DynamoSessionRepository implements SessionRepository, Recommendatio
     private final DynamoDbClient db;
     private final String sessionsTable;
     private final String usersTable;
+    private final String watchedTable;
 
     public DynamoSessionRepository(DynamoDbClient db,
             @Value("${recomate.dynamodb.sessions-table}") String sessionsTable,
-            @Value("${recomate.dynamodb.users-table}") String usersTable) {
+            @Value("${recomate.dynamodb.users-table}") String usersTable,
+            @Value("${recomate.dynamodb.watched-table}") String watchedTable) {
         this.db = db;
         this.sessionsTable = sessionsTable;
         this.usersTable = usersTable;
+        this.watchedTable = watchedTable;
     }
 
     @Override
@@ -169,9 +173,11 @@ public class DynamoSessionRepository implements SessionRepository, Recommendatio
                 .updateExpression(assignments)
                 .conditionExpression("attribute_exists(sessionId) AND #owner = :owner AND " + versionCheck)
                 .expressionAttributeNames(names).expressionAttributeValues(attributes).build();
+        var writes = new java.util.ArrayList<>(List.of(activeUser(userId), TransactWriteItem.builder().update(update).build()));
+        if (exclusion.watched() != null) writes.add(DynamoDbWatchedRepository.put(watchedTable, userId, exclusion.watched()));
         try {
             db.transactWriteItems(TransactWriteItemsRequest.builder().clientRequestToken(UUID.randomUUID().toString())
-                    .transactItems(activeUser(userId), TransactWriteItem.builder().update(update).build()).build());
+                    .transactItems(writes).build());
             return true;
         } catch (TransactionCanceledException cancelled) {
             requireActiveUser(cancelled);

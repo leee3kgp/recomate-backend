@@ -51,6 +51,11 @@ public class DynamoDbUserRepository implements UserRepository {
         return updateActive(userId, "genres", list(genres));
     }
 
+    @Override
+    public UserRecord updateExcludeWatched(String userId, boolean excludeWatched) {
+        return updateActive(userId, "excludeWatched", AttributeValue.builder().bool(excludeWatched).build());
+    }
+
     private UserRecord updateActive(String userId, String field, AttributeValue value) {
         try {
             return read(db.updateItem(UpdateItemRequest.builder().tableName(table).key(key(userId))
@@ -69,7 +74,7 @@ public class DynamoDbUserRepository implements UserRepository {
         try {
             // Intentional upsert: a user may withdraw before ever fetching/creating their app profile.
             return read(db.updateItem(UpdateItemRequest.builder().tableName(table).key(key(userId))
-                    .updateExpression("SET #status = :deleting REMOVE email, nickname, genres, expiresAt")
+                    .updateExpression("SET #status = :deleting REMOVE email, nickname, genres, excludeWatched, expiresAt")
                     .conditionExpression("attribute_not_exists(userId) OR #status = :active")
                     .expressionAttributeNames(Map.of("#status", "status"))
                     .expressionAttributeValues(Map.of(":deleting", text("DELETING"), ":active", text("ACTIVE")))
@@ -106,6 +111,7 @@ public class DynamoDbUserRepository implements UserRepository {
         String nickname = item.containsKey("nickname") ? item.get("nickname").s() : null;
         List<String> genres = item.containsKey("genres") ? item.get("genres").l().stream().map(AttributeValue::s).toList() : List.of();
         Long expiresAt = item.containsKey("expiresAt") ? Long.valueOf(item.get("expiresAt").n()) : null;
-        return new UserRecord(item.get("userId").s(), email, nickname, genres, status, expiresAt);
+        boolean excludeWatched = !item.containsKey("excludeWatched") || item.get("excludeWatched").bool();
+        return new UserRecord(item.get("userId").s(), email, nickname, genres, status, expiresAt, excludeWatched);
     }
 }

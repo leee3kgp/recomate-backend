@@ -8,6 +8,7 @@ public interface UserRepository {
     UserRecord createIfAbsent(UserRecord user);
     UserRecord updateNickname(String userId, String nickname);
     UserRecord replaceGenres(String userId, List<String> genres);
+    UserRecord updateExcludeWatched(String userId, boolean excludeWatched);
     UserRecord beginDeletion(String userId);
     void completeDeletion(String userId, long expiresAt);
 }

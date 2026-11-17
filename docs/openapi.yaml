@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RecoMate User, Session and Genre API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     Issue #6. Paths include /api. Authenticate using the existing Cognito ID Token contract.
     The response fields, nickname handling and withdrawal lifecycle below are the confirmed
@@ -13,8 +13,8 @@ info:
     Nicknames are trimmed (Unicode whitespace) and validated as 1-20 Unicode code points.
     Missing/invalid initial Cognito nicknames require user re-entry via PATCH; no default
     nickname is assigned. This recoverable state is 409 NICKNAME_REQUIRED.
-    Withdrawal removes profile, genres, session items (including embedded recommendations),
-    and the Cognito user. A failure returns 500 and retains DELETING state for retry.
+    Withdrawal removes profile, genres, settings, session items (including embedded recommendations),
+    watched titles (#36) and the Cognito user. A failure returns 500 and retains DELETING state for retry.
     Withdrawal uses strongly consistent base-table Scan after DELETING blocks transactional
     session/recommendation writes. It does not rely on the eventually consistent user GSI.
     After completion a minimal sub/status/expiry marker remains for 48 hours (asynchronous TTL).
@@ -43,6 +43,10 @@ info:
     GET /api/popular (#24) lists popular movies and TV by optional genre and country filters.
     It needs a login (401 otherwise); guests see only a blurred preview in the frontend.
     Results are cached in instance memory for ten minutes per genre/country combination.
+    Issue #36 adds the user's watched titles (/api/users/me/watched) and settings
+    (/api/users/me/settings). A successful "이미 봤어요" exclusion also saves that title to the
+    watched list in the same transaction. When settings.excludeWatched is true (the default),
+    new recommendations leave watched titles out before scoring. Withdrawal erases the list.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
@@ -317,7 +321,10 @@ paths:
         genre counts. TMDB failure returns 502 and stores nothing. The same write stores up
         to 20 next candidates in score order (internal, never returned). A session that stored
         at least one title stays rejected even after every title has been excluded; an empty
-        TMDB result is stored without that mark and can still be retried.
+        TMDB result is stored without that mark and can still be retried. When the user's
+        excludeWatched setting is true (default), watched titles (#36) are removed from the TMDB
+        candidates before scoring, so neither the TOP 3 nor the stored candidates contain them.
+        A user with many watched titles may therefore receive fewer than 3 titles.
       parameters:
         - in: path
           name: sessionId
@@ -359,7 +366,8 @@ paths:
         the current results and writes nothing, so double taps are safe. Sessions stored before
         #18 have no candidates and only lose the excluded title. Writes are conditional on the
         version the server read and on the ACTIVE user status in one transaction; one lost race
-        is retried internally, a second one returns 409 CONCURRENT_UPDATE.
+        is retried internally, a second one returns 409 CONCURRENT_UPDATE. The same transaction
+        saves the excluded title to the user's watched list (#36), so both happen or neither.
       parameters:
         - in: path
           name: sessionId
@@ -482,6 +490,125 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Genres' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/NicknameRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/users/me/watched:
+    get:
+      operationId: listMyWatched
+      summary: List the verified user's watched titles, newest first
+      description: |
+        Query of the local index userId-watchedAt-index with JWT sub and a consistent read.
+        Saving a title again moves it to the top. Return at most limit entries; continue until
+        nextToken is null (a non-null token may lead to an empty final page). Does not create
+        a profile. Unknown/repeated parameters, invalid tokens and another user's token are 400.
+      parameters:
+        - in: query
+          name: limit
+          description: Optional decimal integer without sign, whitespace or leading zero.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - in: query
+          name: nextToken
+          description: Opaque URL-safe cursor returned by the server. Navigation only, not a credential. Do not modify.
+          schema: { type: string, minLength: 1, maxLength: 2048, pattern: '^[A-Za-z0-9_-]+$' }
+      responses:
+        '200':
+          description: Own watched titles; empty array when absent
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WatchedList' }
+              example: { items: [], nextToken: null }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: addMyWatched
+      summary: Save one title as watched
+      description: |
+        Only tmdbId and mediaType are accepted; title, poster and year come from TMDB, never from
+        the client. Saving the same title again succeeds and refreshes watchedAt. Initializes the
+        profile like PUT /api/users/me/genres, so an invalid initial nickname returns 409
+        NICKNAME_REQUIRED. The write requires ACTIVE user status in the same transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WatchedRequest' }
+            example: { tmdbId: 603, mediaType: movie }
+      responses:
+        '200':
+          description: Saved title
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WatchedItem' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: NOT_FOUND - TMDB has no such title (or it is adult content); nothing is stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: NOT_FOUND, message: 콘텐츠를 찾을 수 없습니다. } }
+        '409': { $ref: '#/components/responses/NicknameRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '502':
+          description: UPSTREAM_ERROR - TMDB could not be reached; nothing is stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/users/me/watched/{mediaType}/{tmdbId}:
+    delete:
+      operationId: removeMyWatched
+      summary: Remove one watched title
+      description: Idempotent; removing a title that is not in the list also returns 204.
+      parameters:
+        - in: path
+          name: mediaType
+          required: true
+          schema: { type: string, enum: [movie, tv] }
+        - in: path
+          name: tmdbId
+          required: true
+          schema: { type: string, pattern: '^[1-9][0-9]{0,17}$' }
+      responses:
+        '204': { description: Removed or already absent }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/users/me/settings:
+    get:
+      operationId: getMySettings
+      summary: Get own settings
+      description: Returns the default (excludeWatched true) when no profile or setting exists. Does not create a profile.
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Settings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      operationId: updateMySettings
+      summary: Change own settings
+      description: Body must contain only excludeWatched as a JSON boolean. Initializes the profile like PUT /api/users/me/genres.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Settings' }
+            example: { excludeWatched: false }
+      responses:
+        '200':
+          description: Stored settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Settings' }
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/NicknameRequired' }
@@ -722,6 +849,40 @@ components:
           uniqueItems: true
           items: { $ref: '#/components/schemas/GenreCode' }
           examples: [[ACTION, SF], []]
+    WatchedRequest:
+      type: object
+      additionalProperties: false
+      required: [tmdbId, mediaType]
+      properties:
+        tmdbId: { type: integer, minimum: 1 }
+        mediaType: { type: string, enum: [movie, tv] }
+    WatchedItem:
+      type: object
+      additionalProperties: false
+      required: [tmdbId, mediaType, watchedAt]
+      properties:
+        tmdbId: { type: integer, minimum: 1 }
+        mediaType: { type: string, enum: [movie, tv] }
+        title: { type: string }
+        posterPath: { type: string, description: TMDB poster path; omitted when TMDB has none }
+        releaseYear: { type: integer }
+        watchedAt: { type: string, format: date-time, description: 'UTC, three fractional digits' }
+    WatchedList:
+      type: object
+      additionalProperties: false
+      required: [items, nextToken]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/WatchedItem' }
+        nextToken: { type: [string, 'null'], maxLength: 2048 }
+    Settings:
+      type: object
+      additionalProperties: false
+      required: [excludeWatched]
+      properties:
+        excludeWatched: { type: boolean, default: true, description: Leave watched titles out of new recommendations }
     Error:
       type: object
       additionalProperties: false
@@ -770,7 +931,7 @@ x-dynamodb:
   users:
     partitionKey: { name: userId, type: S, source: verified JWT sub }
     attributes:
-      active: { userId: S, status: 'S=ACTIVE', email: S, nickname: S, genres: L }
+      active: { userId: S, status: 'S=ACTIVE', email: S, nickname: S, genres: L, excludeWatched: 'BOOL (absent means true)' }
       deleting: { userId: S, status: 'S=DELETING' }
       deleted: { userId: S, status: 'S=DELETED', expiresAt: 'N (epoch seconds)' }
     indexes: []
@@ -783,7 +944,7 @@ x-dynamodb:
     accessPatterns:
       - GetItem by userId; consistentRead=true, no filter
       - PutItem with attribute_not_exists(userId); concurrent creation re-reads existing item
-      - UpdateItem nickname or genres with attribute_exists(userId) AND status=ACTIVE
+      - UpdateItem nickname, genres or excludeWatched with attribute_exists(userId) AND status=ACTIVE
       - UpdateItem deletion state; intentional upsert only for first withdrawal without profile
     idempotency: GET initialization is conditional; PATCH/PUT replace fields; DELETE resumes persisted state
   sessions:
@@ -799,3 +960,23 @@ x-dynamodb:
     read: List uses bounded GSI Query with JWT-sub key and descending stored createdAt; detail uses consistent base-table GetItem and ownership check. No read-side writes or enrichment.
     erase: After DELETING, strongly consistent base-table Scan filtered by userId; paginate every page and delete using sessionId-only keys in batches of 25; retry unprocessed items. Never use GSI emptiness as proof of completion.
     integrationRequirement: Every session and recommendation write must check user status ACTIVE atomically in the same DynamoDB transaction. Recommendation updates must also require an existing owned session, empty previous results and no version. Exclusion updates must require an existing owned session and the version that was read (attribute_not_exists for pre-#18 items). Ensure the app profile exists before session creation.
+  watched:
+    ownerIssue: '#36'
+    table: '<stack>-watched'
+    partitionKey: { name: userId, type: S, source: verified JWT sub }
+    sortKey: { name: contentKey, type: S, format: 'mediaType:tmdbId' }
+    attributes: { tmdbId: N, mediaType: S, title: S, posterPath: S, releaseYear: N, watchedAt: 'S (UTC, 3 fractional digits)' }
+    indexes:
+      - name: userId-watchedAt-index
+        type: local
+        sortKey: { name: watchedAt, type: S }
+        projection: ALL
+    capacity: PAY_PER_REQUEST
+    pointInTimeRecovery: enabled
+    deletionProtection: enabled
+    accessPatterns:
+      - Query local index by userId, descending watchedAt, consistentRead=true (list)
+      - Query base table by userId projecting contentKey (auto-exclude and withdrawal)
+      - Put in a transaction with the users-table status=ACTIVE check (POST, and together with the session update on exclusion)
+      - DeleteItem by userId and contentKey (idempotent)
+    erase: After DELETING, consistent base-table Query of every contentKey, then BatchWriteItem deletes in batches of 25 with retries, before Cognito deletion.

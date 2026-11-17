@@ -126,7 +126,10 @@ def check_unauthenticated(c, args, http):
     protected = [("GET", "/api/users/me"), ("PATCH", "/api/users/me"), ("DELETE", "/api/users/me"),
                  ("GET", "/api/users/me/genres"), ("PUT", "/api/users/me/genres"),
                  ("GET", "/api/sessions"), ("POST", "/api/sessions"), ("GET", session), ("DELETE", session),
-                 ("POST", session + "/recommendations"), ("POST", session + "/exclusions"), ("GET", "/api/popular")]
+                 ("POST", session + "/recommendations"), ("POST", session + "/exclusions"), ("GET", "/api/popular"),
+                 ("GET", "/api/users/me/watched"), ("POST", "/api/users/me/watched"),
+                 ("DELETE", "/api/users/me/watched/movie/603"),
+                 ("GET", "/api/users/me/settings"), ("PATCH", "/api/users/me/settings")]
     routes = protected + [("GET", "/api/genres"), ("POST", "/api/guest/recommendations")]
     for method, path in protected:
         r = http.request(method, args.api_base + path, json={} if method in ("POST", "PUT", "PATCH") else None, timeout=60)
@@ -186,6 +189,7 @@ def check_user_flow(c, args, http, ddb, user):
     c.section("profile, nickname and genres")
     r = http.get(base + "/api/users/me", headers=user.headers(origin), timeout=60)
     profile = r.json() if r.status_code == 200 else {}
+    user.user_id = profile.get("userId")
     c.check("first profile read creates the profile", r.status_code == 200 and profile.get("email") == user.email
             and profile.get("nickname") == "점검용", r.status_code)
     c.check("authenticated response allows the frontend origin", r.headers.get("Access-Control-Allow-Origin") == origin)
@@ -236,6 +240,7 @@ def check_user_flow(c, args, http, ddb, user):
     r = http.get(base + "/api/sessions", headers=user.headers(), timeout=60)
     c.check("session appears in my list", r.status_code == 200
             and session_id in [s.get("sessionId") for s in r.json().get("sessions", [])], r.status_code)
+    excluded = None
     if args.skip_recommendation:
         print("SKIP recommendation and exclusion checks (--skip-recommendation)")
     else:
@@ -249,6 +254,7 @@ def check_user_flow(c, args, http, ddb, user):
             after = r.json().get("recommendations", []) if r.status_code == 200 else []
             c.check("exclusion replaces the title", r.status_code == 200 and all(
                 (t["mediaType"], t["tmdbId"]) != (first["mediaType"], first["tmdbId"]) for t in after), r.status_code)
+            excluded = first if r.status_code == 200 else None
             r = http.get(path, headers=user.headers(), timeout=60)
             c.check("session detail reflects the exclusion", r.status_code == 200
                     and r.json().get("recommendations") == after)
@@ -261,9 +267,70 @@ def check_user_flow(c, args, http, ddb, user):
     c.check("session deleted", r.status_code == 204, r.status_code)
     r = http.get(path, headers=user.headers(), timeout=60)
     c.check("deleted session is 404", r.status_code == 404, r.status_code)
+    check_watched(c, args, http, user, excluded)
     r = http.post(base + "/api/sessions", headers=user.headers(), timeout=60, json={
         "participantCount": 2, "participants": [{"index": 1, "genres": ["COMEDY"]}, {"index": 2, "genres": ["ANIMATION"]}]})
     return r.json().get("sessionId") if r.status_code == 201 else None
+
+
+def watched_keys(http, args, user):
+    r = http.get(args.api_base + "/api/users/me/watched?limit=100", headers=user.headers(), timeout=60)
+    keys = [(i.get("mediaType"), i.get("tmdbId")) for i in r.json().get("items", [])] if r.status_code == 200 else []
+    return r, keys
+
+
+def check_watched(c, args, http, user, excluded):
+    """Watched titles (#36): auto-save on exclusion, auto-exclude on generation, add/remove and the setting."""
+    c.section("watched titles and settings")
+    base, url = args.api_base, args.api_base + "/api/users/me/watched"
+    r = http.get(base + "/api/users/me/settings", headers=user.headers(), timeout=60)
+    c.check("auto-exclude is on by default", r.status_code == 200 and r.json() == {"excludeWatched": True}, r.status_code)
+    for label, body in [("string", {"excludeWatched": "false"}), ("extra field", {"excludeWatched": True, "x": 1})]:
+        r = http.patch(base + "/api/users/me/settings", headers=user.headers(), json=body, timeout=60)
+        c.check(f"settings {label} rejected", r.status_code == 400 and error_code(r) == "VALIDATION_ERROR", r.status_code)
+    for label, query in [("limit 0", "?limit=0"), ("bad token", "?nextToken=***")]:
+        r = http.get(url + query, headers=user.headers(), timeout=60)
+        c.check(f"watched list rejects {label}", r.status_code == 400, r.status_code)
+    r = http.post(url, headers=user.headers(), json={"tmdbId": 603, "mediaType": "MOVIE"}, timeout=60)
+    c.check("watched add rejects a bad media type", r.status_code == 400, r.status_code)
+    r = http.delete(url + "/movie/abc", headers=user.headers(), timeout=60)
+    c.check("watched delete rejects a bad id", r.status_code == 400, r.status_code)
+    if args.skip_recommendation:
+        print("SKIP TMDB-backed watched checks (--skip-recommendation)")
+    else:
+        if excluded:
+            key = (excluded["mediaType"], excluded["tmdbId"])
+            r, keys = watched_keys(http, args, user)
+            c.check("excluded title saved as watched", r.status_code == 200 and key in keys, r.status_code)
+            r = http.post(base + "/api/sessions", headers=user.headers(), timeout=60, json={
+                "participantCount": 2,
+                "participants": [{"index": 1, "genres": ["ACTION", "SF"]}, {"index": 2, "genres": ["SF", "DRAMA"]}]})
+            again = r.json().get("sessionId") if r.status_code == 201 else None
+            c.check("second session created", bool(again), r.status_code)
+            if again:
+                r = http.post(f"{base}/api/sessions/{again}/recommendations", headers=user.headers(), timeout=60)
+                top = r.json().get("recommendations", []) if r.status_code == 200 else []
+                c.check("new recommendation leaves out the watched title", r.status_code == 200 and bool(top)
+                        and key not in [(t["mediaType"], t["tmdbId"]) for t in top], r.status_code)
+                http.delete(f"{base}/api/sessions/{again}", headers=user.headers(), timeout=60)
+        origin = args.origins[0]
+        r = http.post(url, headers=user.headers(origin), json={"tmdbId": 1399, "mediaType": "tv"}, timeout=60)
+        c.check("title added from TMDB data", r.status_code == 200 and bool(r.json().get("title"))
+                and r.json().get("mediaType") == "tv", r.status_code)
+        c.check("watched response allows the frontend origin", r.headers.get("Access-Control-Allow-Origin") == origin)
+        r, keys = watched_keys(http, args, user)
+        c.check("added title is listed first", r.status_code == 200 and keys[:1] == [("tv", 1399)], r.status_code)
+        r = http.post(url, headers=user.headers(), json={"tmdbId": 999999999, "mediaType": "movie"}, timeout=60)
+        c.check("unknown TMDB title is 404", r.status_code == 404 and error_code(r) == "NOT_FOUND", r.status_code)
+    for attempt in ("", "repeated "):
+        r = http.delete(url + "/tv/1399", headers=user.headers(), timeout=60)
+        c.check(f"{attempt}watched delete is 204", r.status_code == 204, r.status_code)
+    r, keys = watched_keys(http, args, user)
+    c.check("deleted title is gone", r.status_code == 200 and ("tv", 1399) not in keys, r.status_code)
+    r = http.patch(base + "/api/users/me/settings", headers=user.headers(), json={"excludeWatched": False}, timeout=60)
+    c.check("auto-exclude can be turned off", r.status_code == 200 and r.json() == {"excludeWatched": False}, r.status_code)
+    r = http.get(base + "/api/users/me/settings", headers=user.headers(), timeout=60)
+    c.check("setting is returned on reload", r.status_code == 200 and r.json() == {"excludeWatched": False}, r.status_code)
 
 
 def check_popular(c, args, http, user):
@@ -304,6 +371,10 @@ def check_withdrawal(c, args, http, ddb, user, kept_session):
     if kept_session:
         item = ddb.get_item(TableName=args.sessions_table, Key={"sessionId": {"S": kept_session}}, ConsistentRead=True)
         c.check("user's sessions removed", "Item" not in item)
+    if getattr(user, "user_id", None):
+        left = ddb.query(TableName=args.watched_table, KeyConditionExpression="userId = :u", ConsistentRead=True,
+                         ExpressionAttributeValues={":u": {"S": user.user_id}}, Select="COUNT")["Count"]
+        c.check("user's watched titles removed", left == 0, left)
 
 
 def check_missing_nickname(c, args, http, user):
@@ -327,6 +398,7 @@ def main():
     parser.add_argument("--user-pool-id", default="ap-southeast-2_Cjugq3j3p")
     parser.add_argument("--client-id", default="7h7kjle5d1dh6ogea95thrk20q")
     parser.add_argument("--sessions-table", default="RecommendationSession")
+    parser.add_argument("--watched-table", default="recomate-user-api-dev-watched")
     parser.add_argument("--skip-recommendation", action="store_true", help="skip TMDB-backed generation")
     args = parser.parse_args()
     args.api_base = args.api_base.rstrip("/")

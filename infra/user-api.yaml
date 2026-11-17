@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy user, session and genre APIs behind the existing Cognito authorizer, plus the public genre catalog, stateless guest recommendations and the authenticated popular list, using shared session storage and a digest-pinned Lambda image.
+Description: Deploy user, watched-title, session and genre APIs behind the existing Cognito authorizer, plus the public genre catalog, stateless guest recommendations and the authenticated popular list, using shared session storage and a digest-pinned Lambda image.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -22,6 +22,9 @@ Metadata:
         scope: shared
       - at: docs/popular-api.md
         has: Authenticated popular list with genre and country filters and short in-memory caching
+        scope: shared
+      - at: docs/watched-api.md
+        has: Per-user watched titles, the auto-exclude setting and their withdrawal cleanup
         scope: shared
     must:
       - Keep the existing JWT test stage and Cognito client unchanged.
@@ -100,6 +103,32 @@ Resources:
       DeletionProtectionEnabled: true
       PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
       TimeToLiveSpecification: {AttributeName: expiresAt, Enabled: true}
+  WatchedTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Keep each user's growing watched list out of the fixed-size user item; the local index lists newest first with consistent reads.
+        must: [Keep userId as the verified Cognito sub., Erase a user's items on withdrawal., Retain persistent data on stack removal.]
+    Properties:
+      TableName: !Sub '${AWS::StackName}-watched'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: userId, AttributeType: S}
+        - {AttributeName: contentKey, AttributeType: S}
+        - {AttributeName: watchedAt, AttributeType: S}
+      KeySchema:
+        - {AttributeName: userId, KeyType: HASH}
+        - {AttributeName: contentKey, KeyType: RANGE}
+      LocalSecondaryIndexes:
+        - IndexName: userId-watchedAt-index
+          KeySchema:
+            - {AttributeName: userId, KeyType: HASH}
+            - {AttributeName: watchedAt, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+      DeletionProtectionEnabled: true
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
   ValidationSessionsTable:
     Type: AWS::DynamoDB::Table
     Condition: KeepLegacyValidationTable
@@ -149,6 +178,10 @@ Resources:
             Effect: Allow
             Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:BatchWriteItem']
             Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ExistingSessionsTableName}'
+          - Sid: OwnWatchedTable
+            Effect: Allow
+            Action: ['dynamodb:Query', 'dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:BatchWriteItem']
+            Resource: [!GetAtt WatchedTable.Arn, !Sub '${WatchedTable.Arn}/index/userId-watchedAt-index']
           - Sid: ReadOwnedSessionIndex
             Effect: Allow
             Action: ['dynamodb:Query']
@@ -194,6 +227,7 @@ Resources:
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           COGNITO_CLIENT_ID: !Ref CognitoClientId
           USERS_TABLE: !Ref UsersTable
+          WATCHED_TABLE: !Ref WatchedTable
           SESSIONS_TABLE: !Ref ExistingSessionsTableName
           CORS_ALLOWED_ORIGINS: !Ref AllowedOrigin
           TMDB_ACCESS_TOKEN: !Ref TmdbAccessToken
@@ -605,6 +639,159 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
         TimeoutInMillis: 29000
+  WatchedResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Route the caller's watched list under their own profile path.
+        must: [Keep the verified JWT subject as the owner.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref MeResource, PathPart: watched}
+  WatchedTypeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref WatchedResource, PathPart: '{mediaType}'}
+  WatchedItemResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref WatchedTypeResource, PathPart: '{tmdbId}'}
+  SettingsResource:
+    Type: AWS::ApiGateway::Resource
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Expose user settings separately so the profile response stays minimal.
+        must: [Keep this route under the caller's profile path.]
+    Properties: {RestApiId: !Ref RestApiId, ParentId: !Ref MeResource, PathPart: settings}
+  WatchedGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: List the caller's watched titles newest first.
+        must: [Keep authentication enabled.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref WatchedResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  WatchedPost:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Save one watched title using TMDB data.
+        must: [Keep authentication enabled.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref WatchedResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  WatchedOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref WatchedResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  WatchedItemDelete:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Remove one watched title.
+        must: [Keep authentication enabled.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref WatchedItemResource
+      HttpMethod: DELETE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  WatchedItemOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref WatchedItemResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SettingsGet:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Read the caller's settings.
+        must: [Keep authentication enabled.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SettingsResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SettingsPatch:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Change the caller's settings.
+        must: [Keep authentication enabled.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SettingsResource
+      HttpMethod: PATCH
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
+  SettingsOptions:
+    Type: AWS::ApiGateway::Method
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Allow browser preflight while Spring validates the configured origin.
+        must: [Do not authenticate preflight.]
+    Properties:
+      RestApiId: !Ref RestApiId
+      ResourceId: !Ref SettingsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+        TimeoutInMillis: 29000
   ApiInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -719,21 +906,21 @@ Resources:
         gatewayresponse.header.Content-Type: "'application/json'"
       ResponseTemplates:
         application/json: '{"error":{"code":"$context.error.responseType","message":"요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."}}'
-  ApiDeploymentPopularV1:
+  ApiDeploymentWatchedV1:
     Type: AWS::ApiGateway::Deployment
     Metadata:
       com.aws.cloudformation.Context:
-        why: Publish the authenticated popular list route alongside the public guest recommendation route, public genre catalog, all existing methods and gateway responses.
+        why: Publish the watched list and settings routes alongside the popular list, public guest recommendation route, public genre catalog, all existing methods and gateway responses.
         must: [Wait for all methods and gateway responses., Change the logical ID for future route or response changes.]
-    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, GuestRecommendationsPost, GuestRecommendationsOptions, PopularGet, PopularOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
+    DependsOn: [ProfileGet, ProfilePatch, ProfileDelete, GenresGet, GenresPut, ProfileOptions, GenresOptions, SessionPost, SessionOptions, GenreCatalogGet, GenreCatalogOptions, GuestRecommendationsPost, GuestRecommendationsOptions, PopularGet, PopularOptions, SessionListGet, SessionDetailGet, SessionDetailOptions, SessionDetailDelete, SessionRecommendationsPost, SessionRecommendationsOptions, SessionExclusionsPost, SessionExclusionsOptions, WatchedGet, WatchedPost, WatchedOptions, WatchedItemDelete, WatchedItemOptions, SettingsGet, SettingsPatch, SettingsOptions, UnauthorizedResponse, AccessDeniedResponse, Default4xxResponse, Default5xxResponse]
     Properties:
       RestApiId: !Ref RestApiId
-      Description: RecoMate APIs with the popular list, public guest recommendations and genre catalog
+      Description: RecoMate APIs with watched titles and settings, the popular list, public guest recommendations and genre catalog
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref RestApiId
-      DeploymentId: !Ref ApiDeploymentPopularV1
+      DeploymentId: !Ref ApiDeploymentWatchedV1
       StageName: !Ref StageName
       MethodSettings:
         - ResourcePath: '/*'
@@ -752,6 +939,7 @@ Outputs:
     Value: !Sub 'https://${RestApiId}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}'
     Description: Set this stage URL as the frontend API base
   UsersTableName: {Value: !Ref UsersTable, Description: User profile and deletion state table}
+  WatchedTableName: {Value: !Ref WatchedTable, Description: Per-user watched titles}
   SessionsTableName:
     Value: !Ref ExistingSessionsTableName
     Description: Shared BE2 sessionId table used by live API requests

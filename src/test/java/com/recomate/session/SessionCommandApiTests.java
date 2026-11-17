@@ -11,7 +11,9 @@ import com.recomate.user.IdentityDirectory;
 import com.recomate.user.SessionDataEraser;
 import com.recomate.user.UserRecord;
 import com.recomate.user.UserRepository;
+import com.recomate.watched.WatchedRepository;
 import java.util.List;
+import java.util.Set;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,6 +47,7 @@ class SessionCommandApiTests {
     @MockitoBean SessionRepository sessions;
     @MockitoBean RecommendationRepository results;
     @MockitoBean RecommendationGenerator generator;
+    @MockitoBean WatchedRepository watched;
 
     @BeforeEach
     void defaults() {
@@ -120,7 +123,7 @@ class SessionCommandApiTests {
         var analysis = new SessionAnalysis(); analysis.setGenreScores(List.of(score));
         var recommendations = List.of(recommendation());
         var candidate = recommendation(); candidate.setRank(null); candidate.setTmdbId(604L);
-        when(generator.generate(session)).thenReturn(
+        when(generator.generate(eq(session), eq(Set.of()))).thenReturn(
                 new RecommendationGenerator.Result(recommendations, analysis, List.of(candidate)));
         mvc.perform(post(RECOMMENDATIONS).with(jwt().jwt(t -> t.subject(OWNER))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.sessionId").value(ID))
@@ -128,6 +131,31 @@ class SessionCommandApiTests {
                 .andExpect(jsonPath("$.analysis.genreScores[0].count").value(2))
                 .andExpect(jsonPath("$.candidates").doesNotExist());
         verify(results).saveRecommendations(OWNER, ID, recommendations, analysis, List.of(candidate));
+    }
+
+    @Test
+    void generationLeavesOutWatchedTitlesWhenTheSettingIsOn() throws Exception {
+        var session = session();
+        when(sessions.findById(ID)).thenReturn(Optional.of(session));
+        when(users.find(OWNER)).thenReturn(Optional.of(
+                new UserRecord(OWNER, null, "정우", List.of(), UserRecord.Status.ACTIVE, null, true)));
+        when(watched.keys(OWNER)).thenReturn(Set.of("movie:550"));
+        when(generator.generate(eq(session), eq(Set.of("movie:550")))).thenReturn(
+                new RecommendationGenerator.Result(List.of(recommendation()), new SessionAnalysis(), List.of()));
+        mvc.perform(post(RECOMMENDATIONS).with(jwt().jwt(t -> t.subject(OWNER))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.recommendations[0].tmdbId").value(603));
+    }
+
+    @Test
+    void generationIgnoresWatchedTitlesWhenTheSettingIsOff() throws Exception {
+        var session = session();
+        when(sessions.findById(ID)).thenReturn(Optional.of(session));
+        when(users.find(OWNER)).thenReturn(Optional.of(
+                new UserRecord(OWNER, null, "정우", List.of(), UserRecord.Status.ACTIVE, null, false)));
+        when(generator.generate(eq(session), eq(Set.of()))).thenReturn(
+                new RecommendationGenerator.Result(List.of(recommendation()), new SessionAnalysis(), List.of()));
+        mvc.perform(post(RECOMMENDATIONS).with(jwt().jwt(t -> t.subject(OWNER)))).andExpect(status().isOk());
+        verify(watched, never()).keys(any());
     }
 
     @Test
@@ -157,7 +185,15 @@ class SessionCommandApiTests {
                 .andExpect(jsonPath("$.recommendations[0].title").value("매트릭스 2"))
                 .andExpect(jsonPath("$.candidates").doesNotExist()).andExpect(jsonPath("$.excluded").doesNotExist());
         verifyNoMoreInteractions(ignoreStubs(generator));
-        verify(generator, never()).generate(any());
+        verify(generator, never()).generate(any(), any());
+        var saved = org.mockito.ArgumentCaptor.forClass(RecommendationRepository.Exclusion.class);
+        verify(results).saveExclusion(eq(OWNER), eq(ID), eq(1L), saved.capture());
+        assertThat(saved.getValue().watched()).satisfies(item -> {
+            assertThat(item.tmdbId()).isEqualTo(603L);
+            assertThat(item.mediaType()).isEqualTo("movie");
+            assertThat(item.title()).isEqualTo("매트릭스");
+            assertThat(item.watchedAt()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z");
+        });
     }
 
     @Test
@@ -191,7 +227,7 @@ class SessionCommandApiTests {
     void generationFailureStoresNothing() throws Exception {
         var session = session();
         when(sessions.findById(ID)).thenReturn(Optional.of(session));
-        when(generator.generate(session)).thenThrow(ApiException.upstream());
+        when(generator.generate(eq(session), any())).thenThrow(ApiException.upstream());
         mvc.perform(post(RECOMMENDATIONS).with(jwt().jwt(t -> t.subject(OWNER))))
                 .andExpect(status().isBadGateway()).andExpect(jsonPath("$.error.code").value("UPSTREAM_ERROR"));
         verifyNoInteractions(results);

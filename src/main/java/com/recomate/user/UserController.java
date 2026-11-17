@@ -1,5 +1,6 @@
 package com.recomate.user;
 
+import com.recomate.common.ApiException;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.ResponseEntity;
@@ -41,10 +42,24 @@ public class UserController {
         return new GenresResponse(users.replaceGenres(jwt.getSubject(), genres));
     }
 
+    @GetMapping("/settings")
+    SettingsResponse settings(@AuthenticationPrincipal Jwt jwt) {
+        return new SettingsResponse(users.excludeWatched(jwt.getSubject()));
+    }
+
+    @PatchMapping("/settings")
+    SettingsResponse updateSettings(@AuthenticationPrincipal Jwt jwt, @RequestBody Map<String, Object> body) {
+        if (!(UserInput.onlyField(body, "excludeWatched") instanceof Boolean excludeWatched)) {
+            throw ApiException.validation("excludeWatched는 true 또는 false여야 합니다.");
+        }
+        return new SettingsResponse(users.updateExcludeWatched(jwt.getSubject(), excludeWatched));
+    }
+
     public record ProfileResponse(String userId, String email, String nickname) {
         static ProfileResponse from(UserRecord user) {
             return new ProfileResponse(user.userId(), user.email(), user.nickname());
         }
     }
     public record GenresResponse(List<String> genres) { }
+    public record SettingsResponse(boolean excludeWatched) { }
 }

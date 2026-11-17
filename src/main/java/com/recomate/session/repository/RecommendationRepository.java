@@ -2,6 +2,7 @@ package com.recomate.session.repository;
 
 import com.recomate.session.domain.Recommendation;
 import com.recomate.session.domain.SessionAnalysis;
+import com.recomate.watched.WatchedItem;
 import java.util.List;
 
 /** Shared persistence boundary for the recommendation API; no TMDB/scoring logic here. */
@@ -25,12 +26,18 @@ public interface RecommendationRepository {
      */
     boolean saveExclusion(String userId, String sessionId, Long expectedVersion, Exclusion exclusion);
 
+    /** watched: the excluded title, saved to the user's watched list in the same transaction (null: none). */
     record Exclusion(List<Recommendation> recommendations, SessionAnalysis analysis,
-            List<Recommendation> candidates, List<String> excluded) {
+            List<Recommendation> candidates, List<String> excluded, WatchedItem watched) {
         public Exclusion {
             recommendations = List.copyOf(recommendations);
             candidates = List.copyOf(candidates);
             excluded = List.copyOf(excluded);
+        }
+
+        public Exclusion(List<Recommendation> recommendations, SessionAnalysis analysis,
+                List<Recommendation> candidates, List<String> excluded) {
+            this(recommendations, analysis, candidates, excluded, null);
         }
     }
 }
