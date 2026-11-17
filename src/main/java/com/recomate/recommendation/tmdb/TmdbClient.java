@@ -4,6 +4,7 @@ import com.recomate.genre.Genre;
 import com.recomate.recommendation.ContentType;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 public interface TmdbClient {
     /** 주어진 내부 장르에 해당하는 인기순 후보 콘텐츠를 조회한다. */
@@ -16,5 +17,10 @@ public interface TmdbClient {
      */
     default List<TmdbContent> discoverPopular(ContentType type, Genre genre, String country) {
         throw new UnsupportedOperationException("Popular discovery is not supported by this client");
+    }
+
+    /** 콘텐츠 한 편을 조회한다. TMDB에 없거나 성인 콘텐츠면 비어 있다. */
+    default Optional<TmdbContent> details(ContentType type, long id) {
+        throw new UnsupportedOperationException("Detail lookup is not supported by this client");
     }
 }

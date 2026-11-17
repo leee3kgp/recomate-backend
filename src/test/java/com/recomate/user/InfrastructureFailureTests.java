@@ -127,7 +127,7 @@ class InfrastructureFailureTests {
         var sessions = mock(SessionDataEraser.class);
         when(users.beginDeletion("owner")).thenReturn(new UserRecord("owner", null, null, List.of(), UserRecord.Status.DELETING, null));
         doThrow(new IllegalStateException("temporary storage failure")).doNothing().when(users).completeDeletion(eq("owner"), anyLong());
-        var service = new UserService(users, identities, sessions, Clock.systemUTC());
+        var service = new UserService(users, identities, sessions, mock(com.recomate.watched.WatchedRepository.class), Clock.systemUTC());
         assertThatThrownBy(() -> service.delete("owner")).isInstanceOf(IllegalStateException.class);
         service.delete("owner");
         verify(identities, times(2)).delete("owner");

@@ -29,6 +29,21 @@ class TmdbRecommendationGeneratorTest {
     }
 
     @Test
+    void excludedTitlesAreRemovedBeforeScoringAndNeverReturned() {
+        TmdbClient tmdb = (type, genres) -> type == ContentType.MOVIE
+                ? List.of(content(1, type, Genre.SF, Genre.ACTION), content(3, type, Genre.SF))
+                : List.of(content(1, type, Genre.ACTION));
+
+        var result = new TmdbRecommendationGenerator(tmdb, scorer).generate(session(), Set.of("movie:1"));
+
+        var shown = new ArrayList<String>();
+        result.recommendations().forEach(item -> shown.add(item.getMediaType() + ":" + item.getTmdbId()));
+        result.candidates().forEach(item -> shown.add(item.getMediaType() + ":" + item.getTmdbId()));
+        // Same id with another media type is a different title and stays.
+        assertEquals(Set.of("movie:3", "tv:1"), Set.copyOf(shown));
+    }
+
+    @Test
     void combinesMovieAndTvCandidatesIntoRankedResultsAndAnalysis() {
         List<ContentType> requested = new ArrayList<>();
         TmdbClient tmdb = (type, genres) -> {

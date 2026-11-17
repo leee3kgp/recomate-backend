@@ -11,6 +11,8 @@ import com.recomate.session.repository.RecommendationRepository;
 import com.recomate.session.service.SessionService;
 import com.recomate.user.infrastructure.DynamoDbSessionDataEraser;
 import com.recomate.user.infrastructure.DynamoDbUserRepository;
+import com.recomate.watched.DynamoDbWatchedRepository;
+import com.recomate.watched.WatchedItem;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
@@ -41,6 +43,8 @@ class DynamoDbLocalTests {
     private DynamoDbSessionDataEraser sessions;
     private String usersTable;
     private String sessionsTable;
+    private String watchedTable;
+    private DynamoDbWatchedRepository watched;
 
     @BeforeAll
     void createIsolatedLocalTables() {
@@ -53,6 +57,7 @@ class DynamoDbLocalTests {
         String suffix = UUID.randomUUID().toString();
         usersTable = "test-users-" + suffix;
         sessionsTable = "test-sessions-" + suffix;
+        watchedTable = "test-watched-" + suffix;
         db.createTable(CreateTableRequest.builder().tableName(usersTable).billingMode(BillingMode.PAY_PER_REQUEST)
                 .keySchema(KeySchemaElement.builder().attributeName("userId").keyType(KeyType.HASH).build())
                 .attributeDefinitions(AttributeDefinition.builder().attributeName("userId").attributeType(ScalarAttributeType.S).build()).build());
@@ -65,6 +70,17 @@ class DynamoDbLocalTests {
                         .keySchema(KeySchemaElement.builder().attributeName("userId").keyType(KeyType.HASH).build(),
                                 KeySchemaElement.builder().attributeName("createdAt").keyType(KeyType.RANGE).build())
                         .projection(Projection.builder().projectionType(ProjectionType.ALL).build()).build()).build());
+        db.createTable(CreateTableRequest.builder().tableName(watchedTable).billingMode(BillingMode.PAY_PER_REQUEST)
+                .keySchema(KeySchemaElement.builder().attributeName("userId").keyType(KeyType.HASH).build(),
+                        KeySchemaElement.builder().attributeName("contentKey").keyType(KeyType.RANGE).build())
+                .attributeDefinitions(AttributeDefinition.builder().attributeName("userId").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("contentKey").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("watchedAt").attributeType(ScalarAttributeType.S).build())
+                .localSecondaryIndexes(LocalSecondaryIndex.builder().indexName(DynamoDbWatchedRepository.INDEX)
+                        .keySchema(KeySchemaElement.builder().attributeName("userId").keyType(KeyType.HASH).build(),
+                                KeySchemaElement.builder().attributeName("watchedAt").keyType(KeyType.RANGE).build())
+                        .projection(Projection.builder().projectionType(ProjectionType.ALL).build()).build()).build());
+        watched = new DynamoDbWatchedRepository(db, watchedTable, usersTable);
         users = new DynamoDbUserRepository(db, usersTable);
         sessions = new DynamoDbSessionDataEraser(db, sessionsTable);
     }
@@ -75,6 +91,7 @@ class DynamoDbLocalTests {
             try {
                 if (usersTable != null) db.deleteTable(DeleteTableRequest.builder().tableName(usersTable).build());
                 if (sessionsTable != null) db.deleteTable(DeleteTableRequest.builder().tableName(sessionsTable).build());
+                if (watchedTable != null) db.deleteTable(DeleteTableRequest.builder().tableName(watchedTable).build());
             } finally { db.close(); }
         }
     }
@@ -86,7 +103,7 @@ class DynamoDbLocalTests {
     @Test
     void queryUsesOwnerIndexNewestFirstAndCursorSurvivesDeletedBoundary() {
         String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         users.createIfAbsent(seed(owner, "owner")); users.createIfAbsent(seed(other, "other"));
         var ids = new java.util.ArrayList<String>();
         for (int index = 0; index < 3; index++) {
@@ -122,7 +139,7 @@ class DynamoDbLocalTests {
         item.put("participantCount", AttributeValue.builder().n("2").build());
         item.put("createdAt", AttributeValue.builder().s("2026-10-30T00:00:00Z").build());
         db.putItem(PutItemRequest.builder().tableName(sessionsTable).item(item).build());
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var legacy = repository.findById(id).orElseThrow();
         assertThat(legacy.getRecommendations()).isEmpty(); assertThat(legacy.getAnalysis()).isNull();
         item.put("recommendations", AttributeValue.builder().l(AttributeValue.builder().m(Map.of(
@@ -147,7 +164,7 @@ class DynamoDbLocalTests {
     void resultsAndAnalysisShareTheSessionItemAndLeaveWithIt() {
         String owner = UUID.randomUUID().toString();
         users.createIfAbsent(seed(owner, "owner"));
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var created = session(owner);
         repository.save(created);
         var result = recommendation();
@@ -169,7 +186,7 @@ class DynamoDbLocalTests {
     void analysisCannotBeSavedDuringWithdrawalOrOverExistingResults() {
         String owner = UUID.randomUUID().toString();
         users.createIfAbsent(seed(owner, "owner"));
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var created = session(owner);
         repository.save(created);
         repository.saveRecommendations(owner, created.getSessionId(), List.of(recommendation()));
@@ -189,7 +206,7 @@ class DynamoDbLocalTests {
         String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
         users.createIfAbsent(seed(owner, "owner"));
         users.createIfAbsent(seed(other, "other"));
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var created = session(owner);
         repository.save(created);
         assertThat(storedSession(created.getSessionId())).doesNotContainKeys("candidates", "excluded", "version");
@@ -225,7 +242,7 @@ class DynamoDbLocalTests {
     void legacyResultsWithoutVersionCanBeExcludedOnceAndNotDuringWithdrawal() {
         String owner = UUID.randomUUID().toString();
         users.createIfAbsent(seed(owner, "owner"));
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var legacy = session(owner);
         legacy.setRecommendations(List.of(recommendation()));
         repository.save(legacy);
@@ -247,7 +264,7 @@ class DynamoDbLocalTests {
     void onlyTheOwnerCanDeleteAndRepeatedDeletionFindsNothing() {
         String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
         users.createIfAbsent(seed(owner, "owner"));
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var created = session(owner);
         repository.save(created);
         assertThat(repository.deleteOwned(other, created.getSessionId())).isFalse();
@@ -288,7 +305,7 @@ class DynamoDbLocalTests {
         String id = UUID.randomUUID().toString();
         var directory = mock(IdentityDirectory.class);
         when(directory.profile(id)).thenReturn(new IdentityDirectory.ProfileSeed("test@example.test", null));
-        var service = new UserService(users, directory, sessions, Clock.systemUTC());
+        var service = new UserService(users, directory, sessions, watched, Clock.systemUTC());
 
         assertThatThrownBy(() -> service.profile(id)).isInstanceOfSatisfying(ApiException.class, error -> {
             assertThat(error.status()).isEqualTo(409);
@@ -364,7 +381,7 @@ class DynamoDbLocalTests {
         var directory = mock(IdentityDirectory.class);
         doThrow(new IllegalStateException("temporary failure")).doNothing().when(directory).delete(id);
         var now = Instant.parse("2026-10-27T00:00:00Z");
-        var service = new UserService(users, directory, sessions, Clock.fixed(now, ZoneOffset.UTC));
+        var service = new UserService(users, directory, sessions, watched, Clock.fixed(now, ZoneOffset.UTC));
         assertThatThrownBy(() -> service.delete(id)).isInstanceOf(IllegalStateException.class);
         assertThat(users.find(id).orElseThrow().status()).isEqualTo(UserRecord.Status.DELETING);
         assertThat(users.find(id).orElseThrow().expiresAt()).isNull();
@@ -384,7 +401,7 @@ class DynamoDbLocalTests {
         String id = UUID.randomUUID().toString();
         var directory = mock(IdentityDirectory.class);
         var service = new UserService(users, directory,
-                new DynamoDbSessionDataEraser(db, "missing-" + UUID.randomUUID()), Clock.systemUTC());
+                new DynamoDbSessionDataEraser(db, "missing-" + UUID.randomUUID()), watched, Clock.systemUTC());
         assertThatThrownBy(() -> service.delete(id)).isInstanceOf(ResourceNotFoundException.class);
         assertThat(users.find(id).orElseThrow().status()).isEqualTo(UserRecord.Status.DELETING);
         verifyNoInteractions(directory);
@@ -396,8 +413,8 @@ class DynamoDbLocalTests {
         users.createIfAbsent(seed(owner, "owner"));
         users.createIfAbsent(seed(other, "other"));
         var directory = mock(IdentityDirectory.class);
-        var userService = new UserService(users, directory, sessions, Clock.systemUTC());
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var userService = new UserService(users, directory, sessions, watched, Clock.systemUTC());
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var service = new SessionService(repository, userService, Clock.systemUTC());
         var created = service.createSession(owner, new CreateSessionRequest(2,
                 List.of(new ParticipantRequest(1, null, List.of("ACTION")), new ParticipantRequest(2, null, List.of("SF")))));
@@ -419,7 +436,7 @@ class DynamoDbLocalTests {
     void transactionalWritesRejectWithdrawalAndCannotRecreateDeletedSessions() {
         String owner = UUID.randomUUID().toString();
         users.createIfAbsent(seed(owner, "owner"));
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var existing = session(owner);
         repository.save(existing);
         users.beginDeletion(owner);
@@ -439,7 +456,7 @@ class DynamoDbLocalTests {
         String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
         users.createIfAbsent(seed(owner, "owner"));
         users.createIfAbsent(seed(other, "other"));
-        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
         var created = session(owner);
         repository.save(created);
         assertThatThrownBy(() -> repository.saveRecommendations(other, created.getSessionId(), List.of(recommendation())))
@@ -457,9 +474,9 @@ class DynamoDbLocalTests {
         for (int run = 0; run < 3; run++) {
             String owner = UUID.randomUUID().toString();
             users.createIfAbsent(seed(owner, "owner"));
-            var repository = new DynamoSessionRepository(db, sessionsTable, usersTable);
+            var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
             var directory = mock(IdentityDirectory.class);
-            var service = new UserService(users, directory, sessions, Clock.systemUTC());
+            var service = new UserService(users, directory, sessions, watched, Clock.systemUTC());
             var start = new CountDownLatch(1);
             try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
                 var creation = executor.submit(() -> {
@@ -512,5 +529,71 @@ class DynamoDbLocalTests {
     private int sessionCount(String id) {
         return db.scan(ScanRequest.builder().tableName(sessionsTable).consistentRead(true).filterExpression("userId = :id")
                 .expressionAttributeValues(Map.of(":id", AttributeValue.builder().s(id).build())).select(Select.COUNT).build()).count();
+    }
+
+    private static WatchedItem watchedItem(long id, String at) {
+        return new WatchedItem(id, "movie", "title" + id, "/p.jpg", 2024, at);
+    }
+
+    @Test
+    void watchedListIsNewestFirstPagedAndResavingMovesATitleUp() {
+        String owner = UUID.randomUUID().toString(), other = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner")); users.createIfAbsent(seed(other, "other"));
+        watched.save(owner, watchedItem(1, "2026-11-16T00:00:01.000Z"));
+        watched.save(owner, watchedItem(2, "2026-11-16T00:00:02.000Z"));
+        watched.save(owner, watchedItem(3, "2026-11-16T00:00:03.000Z"));
+        watched.save(other, watchedItem(9, "2026-11-16T00:00:09.000Z"));
+        watched.save(owner, watchedItem(1, "2026-11-16T00:00:04.000Z"));
+
+        var first = watched.list(owner, 2, null);
+        assertThat(first.items()).extracting(WatchedItem::tmdbId).containsExactly(1L, 3L);
+        assertThat(first.items().get(0).title()).isEqualTo("title1");
+        var rest = watched.list(owner, 2, first.next());
+        assertThat(rest.items()).extracting(WatchedItem::tmdbId).containsExactly(2L);
+        assertThat(watched.keys(owner)).containsExactlyInAnyOrder("movie:1", "movie:2", "movie:3");
+
+        watched.delete(owner, "movie:2");
+        watched.delete(owner, "movie:2");
+        assertThat(watched.keys(owner)).containsExactlyInAnyOrder("movie:1", "movie:3");
+        assertThat(watched.keys(other)).containsExactly("movie:9");
+    }
+
+    @Test
+    void withdrawalBlocksNewWatchedTitlesAndErasesExistingOnes() {
+        String owner = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        for (int id = 1; id <= 30; id++) watched.save(owner, watchedItem(id, "2026-11-16T00:00:00.000Z"));
+        var service = new UserService(users, mock(IdentityDirectory.class), sessions, watched, Clock.systemUTC());
+        service.delete(owner);
+        assertThat(watched.keys(owner)).isEmpty();
+        assertThatThrownBy(() -> watched.save(owner, watchedItem(99, "2026-11-16T00:00:00.000Z")))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(401));
+        assertThat(watched.keys(owner)).isEmpty();
+        assertThatThrownBy(() -> watched.save(UUID.randomUUID().toString(), watchedItem(1, "2026-11-16T00:00:00.000Z")))
+                .isInstanceOfSatisfying(ApiException.class, error -> assertThat(error.status()).isEqualTo(401));
+    }
+
+    @Test
+    void exclusionAndItsWatchedEntryCommitTogether() {
+        String owner = UUID.randomUUID().toString();
+        users.createIfAbsent(seed(owner, "owner"));
+        var repository = new DynamoSessionRepository(db, sessionsTable, usersTable, watchedTable);
+        var session = new RecommendationSession();
+        session.setSessionId(UUID.randomUUID().toString()); session.setUserId(owner);
+        session.setParticipantCount(2); session.setCreatedAt("2026-11-16T00:00:00Z");
+        repository.save(session);
+        var shown = new Recommendation();
+        shown.setRank(1); shown.setTmdbId(603L); shown.setMediaType("movie"); shown.setTitle("매트릭스");
+        repository.saveRecommendations(owner, session.getSessionId(), List.of(shown));
+        var seen = new WatchedItem(603L, "movie", "매트릭스", null, null, "2026-11-16T00:00:05.000Z");
+
+        // A stale version loses the race: neither the exclusion nor the watched entry is written.
+        assertThat(repository.saveExclusion(owner, session.getSessionId(), 7L,
+                new RecommendationRepository.Exclusion(List.of(), null, List.of(), List.of("movie:603"), seen))).isFalse();
+        assertThat(watched.keys(owner)).isEmpty();
+
+        assertThat(repository.saveExclusion(owner, session.getSessionId(), 1L,
+                new RecommendationRepository.Exclusion(List.of(), null, List.of(), List.of("movie:603"), seen))).isTrue();
+        assertThat(watched.list(owner, 20, null).items()).containsExactly(seen);
     }
 }

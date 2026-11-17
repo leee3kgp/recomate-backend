@@ -79,7 +79,7 @@ DELETE /api/sessions/{sessionId}
 POST /api/sessions/{sessionId}/recommendations
 ```
 
-요청 본문은 없습니다. `RecommendationService`가 본인 세션을 확인하고, 이미 추천이 있으면 외부 호출 전에 409를 반환합니다. 이후 `RecommendationGenerator`로 결과를 만들어 추천과 analysis를 세션 항목에 함께 저장합니다. 저장은 기존 ACTIVE·소유권·중복 조건 트랜잭션을 사용하므로 탈퇴 중에는 저장되지 않고 탈퇴 시 세션과 함께 삭제됩니다.
+요청 본문은 없습니다. `RecommendationService`가 본인 세션을 확인하고, 이미 추천이 있으면 외부 호출 전에 409를 반환합니다. 이후 `RecommendationGenerator`로 결과를 만들어 추천과 analysis를 세션 항목에 함께 저장합니다. 사용자의 본 작품 자동 제외 설정이 켜져 있으면(기본값) 본 작품을 점수 계산 전에 후보에서 뺍니다([본 작품 API](watched-api.md)). 저장은 기존 ACTIVE·소유권·중복 조건 트랜잭션을 사용하므로 탈퇴 중에는 저장되지 않고 탈퇴 시 세션과 함께 삭제됩니다.
 
 저장 시 genres는 장르 마스터 코드만, matchedParticipants와 analysis의 index는 1~6만 허용합니다. analysis의 count는 0 이상, matchRate는 0~1입니다. matchedParticipants는 세션 참여자에서 계산하므로 실제 인원수를 넘지 않습니다. 기존 `saveRecommendations` 3개 인자 메서드는 analysis 없이 저장하도록 유지합니다.
 

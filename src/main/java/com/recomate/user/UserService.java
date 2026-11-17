@@ -1,6 +1,7 @@
 package com.recomate.user;
 
 import com.recomate.common.ApiException;
+import com.recomate.watched.WatchedRepository;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
@@ -11,12 +12,15 @@ public class UserService {
     private final UserRepository users;
     private final IdentityDirectory identities;
     private final SessionDataEraser sessions;
+    private final WatchedRepository watched;
     private final Clock clock;
 
-    public UserService(UserRepository users, IdentityDirectory identities, SessionDataEraser sessions, Clock clock) {
+    public UserService(UserRepository users, IdentityDirectory identities, SessionDataEraser sessions,
+            WatchedRepository watched, Clock clock) {
         this.users = users;
         this.identities = identities;
         this.sessions = sessions;
+        this.watched = watched;
         this.clock = clock;
     }
 
@@ -63,11 +67,22 @@ public class UserService {
         return users.replaceGenres(userId, genres).genres();
     }
 
+    /** Missing profile: the default (on), without creating the profile on a read. */
+    public boolean excludeWatched(String userId) {
+        return users.find(userId).map(user -> { requireActive(user); return user.excludeWatched(); }).orElse(true);
+    }
+
+    public boolean updateExcludeWatched(String userId, boolean excludeWatched) {
+        profile(userId);
+        return users.updateExcludeWatched(userId, excludeWatched).excludeWatched();
+    }
+
     public void delete(String userId) {
         UserRecord state = users.beginDeletion(userId);
         if (state.status() == UserRecord.Status.DELETED) return;
         // Each step is idempotent. Never mark complete before every external deletion succeeds.
         sessions.deleteAll(userId);
+        watched.deleteAll(userId);
         identities.delete(userId);
         // Max Cognito ID-token lifetime is 24h; 48h also covers clock skew. TTL is asynchronous.
         users.completeDeletion(userId, clock.instant().plus(Duration.ofHours(48)).getEpochSecond());

@@ -1,6 +1,7 @@
 package com.recomate.user;
 
 import com.recomate.genre.Genre;
+import com.recomate.watched.WatchedRepository;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +30,7 @@ class UserApiTests {
     @MockitoBean UserRepository users;
     @MockitoBean IdentityDirectory identities;
     @MockitoBean SessionDataEraser sessions;
+    @MockitoBean WatchedRepository watched;
     private static final String OWNER = "owner-sub";
     private static final UserRecord USER = new UserRecord(OWNER, "owner@example.test", "정우", List.of(), UserRecord.Status.ACTIVE, null);
 
@@ -177,12 +179,42 @@ class UserApiTests {
     }
 
     @Test
-    void allFiveRoutesRejectMissingAuthentication() throws Exception {
+    void allProfileRoutesRejectMissingAuthentication() throws Exception {
         for (var request : List.of(get("/api/users/me"), patch("/api/users/me"), delete("/api/users/me"),
-                get("/api/users/me/genres"), put("/api/users/me/genres"))) {
+                get("/api/users/me/genres"), put("/api/users/me/genres"),
+                get("/api/users/me/settings"), patch("/api/users/me/settings"))) {
             mvc.perform(request).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("UNAUTHORIZED"));
         }
-        verifyNoInteractions(users, identities, sessions);
+        verifyNoInteractions(users, identities, sessions, watched);
+    }
+
+    @Test
+    void settingsDefaultToExcludingWatchedWithoutCreatingAProfile() throws Exception {
+        mvc.perform(get("/api/users/me/settings").with(jwt().jwt(token -> token.subject(OWNER))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.excludeWatched").value(true));
+        verify(users, never()).createIfAbsent(any());
+    }
+
+    @Test
+    void settingsPatchStoresTheFlag() throws Exception {
+        var active = new UserRecord(OWNER, "test@example.test", "정우", List.of(), UserRecord.Status.ACTIVE, null);
+        when(users.find(OWNER)).thenReturn(Optional.of(active));
+        when(users.updateExcludeWatched(OWNER, false)).thenReturn(
+                new UserRecord(OWNER, "test@example.test", "정우", List.of(), UserRecord.Status.ACTIVE, null, false));
+        mvc.perform(patch("/api/users/me/settings").with(jwt().jwt(token -> token.subject(OWNER)))
+                        .contentType("application/json").content("{\"excludeWatched\":false}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.excludeWatched").value(false));
+    }
+
+    @Test
+    void settingsPatchAcceptsOnlyABooleanFlag() throws Exception {
+        for (String body : List.of("{}", "{\"excludeWatched\":\"false\"}", "{\"excludeWatched\":null}",
+                "{\"excludeWatched\":true,\"nickname\":\"x\"}")) {
+            mvc.perform(patch("/api/users/me/settings").with(jwt().jwt(token -> token.subject(OWNER)))
+                            .contentType("application/json").content(body))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        }
+        verify(users, never()).updateExcludeWatched(anyString(), anyBoolean());
     }
 
     @Test
@@ -190,9 +222,10 @@ class UserApiTests {
         when(users.beginDeletion(OWNER)).thenReturn(new UserRecord(OWNER, null, null, List.of(), UserRecord.Status.DELETING, null));
         mvc.perform(delete("/api/users/me").with(jwt().jwt(token -> token.subject(OWNER))))
                 .andExpect(status().isNoContent()).andExpect(content().string(""));
-        var order = inOrder(users, sessions, identities);
+        var order = inOrder(users, sessions, watched, identities);
         order.verify(users).beginDeletion(OWNER);
         order.verify(sessions).deleteAll(OWNER);
+        order.verify(watched).deleteAll(OWNER);
         order.verify(identities).delete(OWNER);
         order.verify(users).completeDeletion(eq(OWNER), anyLong());
     }

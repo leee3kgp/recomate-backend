@@ -17,7 +17,7 @@ class RecommendationValidationTests {
     @Test
     void invalidResultsNeverReachTheDatabase() {
         var db = mock(DynamoDbClient.class);
-        var repository = new DynamoSessionRepository(db, "sessions", "users");
+        var repository = new DynamoSessionRepository(db, "sessions", "users", "watched");
         for (String mediaType : Arrays.asList(null, "MOVIE", "unknown")) {
             var item = recommendation(); item.setMediaType(mediaType);
             assertThatThrownBy(() -> repository.saveRecommendations("owner", "session", List.of(item)))
@@ -34,7 +34,7 @@ class RecommendationValidationTests {
     @Test
     void invalidOptionalValuesNeverReachTheDatabase() {
         var db = mock(DynamoDbClient.class);
-        var repository = new DynamoSessionRepository(db, "sessions", "users");
+        var repository = new DynamoSessionRepository(db, "sessions", "users", "watched");
         var genre = recommendation(); genre.setGenres(List.of("NOT_A_GENRE"));
         var nullGenre = recommendation(); nullGenre.setGenres(Arrays.asList((String) null));
         var participant = recommendation(); participant.setMatchedParticipants(List.of(7));
@@ -56,7 +56,7 @@ class RecommendationValidationTests {
     @Test
     void invalidCandidatesAndExclusionsNeverReachTheDatabase() {
         var db = mock(DynamoDbClient.class);
-        var repository = new DynamoSessionRepository(db, "sessions", "users");
+        var repository = new DynamoSessionRepository(db, "sessions", "users", "watched");
         var badType = recommendation(); badType.setMediaType("MOVIE");
         var badGenre = recommendation(); badGenre.setGenres(List.of("NOT_A_GENRE"));
         var tooMany = java.util.stream.LongStream.rangeClosed(1, 21).mapToObj(id -> {

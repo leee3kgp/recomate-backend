@@ -9,11 +9,13 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -77,6 +79,24 @@ public class RestClientTmdbClient implements TmdbClient {
         }
     }
 
+    @Override
+    public Optional<TmdbContent> details(ContentType type, long id) {
+        try {
+            Detail body = http.get().uri(u -> u.path("/{type}/{id}").queryParam("language", "ko-KR")
+                    .build(type.value(), id)).retrieve().body(Detail.class);
+            // Discovery excludes adult titles; keep the same rule for direct lookups.
+            if (body == null || body.adult()) return Optional.empty();
+            List<Integer> genreIds = body.genres() == null ? List.of() : body.genres().stream().map(GenreRef::id).toList();
+            return Optional.of(toContent(type, new Item(body.id(), body.title(), body.name(), body.posterPath(),
+                    body.releaseDate(), body.firstAirDate(), body.voteAverage(), body.voteCount(), body.popularity(),
+                    genreIds)));
+        } catch (HttpClientErrorException.NotFound missing) {
+            return Optional.empty();
+        } catch (RestClientException e) {
+            throw ApiException.upstream();
+        }
+    }
+
     private static TmdbContent toContent(ContentType type, Item item) {
         boolean movie = type == ContentType.MOVIE;
         String date = movie ? item.releaseDate() : item.firstAirDate();
@@ -98,4 +118,17 @@ public class RestClientTmdbClient implements TmdbClient {
                 @JsonProperty("vote_count") int voteCount,
                 double popularity,
                 @JsonProperty("genre_ids") List<Integer> genreIds) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Detail(long id, String title, String name, boolean adult,
+                  @JsonProperty("poster_path") String posterPath,
+                  @JsonProperty("release_date") String releaseDate,
+                  @JsonProperty("first_air_date") String firstAirDate,
+                  @JsonProperty("vote_average") double voteAverage,
+                  @JsonProperty("vote_count") int voteCount,
+                  double popularity,
+                  List<GenreRef> genres) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record GenreRef(int id) {}
 }

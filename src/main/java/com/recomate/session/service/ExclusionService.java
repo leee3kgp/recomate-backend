@@ -8,6 +8,8 @@ import com.recomate.session.dto.RecommendationResponse;
 import com.recomate.session.repository.RecommendationRepository;
 import com.recomate.session.repository.RecommendationRepository.Exclusion;
 import com.recomate.session.repository.SessionRepository;
+import com.recomate.watched.WatchedItem;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Service;
 
 /**
  * "이미 봤어요" (#18): drops one current title and promotes the best stored candidate.
+ * The dropped title is also saved to the user's watched list (#36) in the same write.
  * Never calls TMDB; candidates are stored at generation time in score order.
  */
 @Service
@@ -25,12 +28,14 @@ public class ExclusionService {
     private final SessionRepository sessions;
     private final RecommendationRepository results;
     private final RecommendationGenerator generator;
+    private final Clock clock;
 
     public ExclusionService(SessionRepository sessions, RecommendationRepository results,
-            RecommendationGenerator generator) {
+            RecommendationGenerator generator, Clock clock) {
         this.sessions = sessions;
         this.results = results;
         this.generator = generator;
+        this.clock = clock;
     }
 
     public RecommendationResponse exclude(String userId, String rawId, ExclusionRequest request) {
@@ -43,9 +48,8 @@ public class ExclusionService {
             List<String> excluded = orEmpty(session.getExcluded());
             // Repeated taps return the current state instead of failing.
             if (excluded.contains(target)) return response(sessionId, current, session);
-            if (current.stream().noneMatch(item -> key(item).equals(target))) {
-                throw ApiException.validation("현재 추천 결과에 없는 콘텐츠입니다.");
-            }
+            Recommendation seen = current.stream().filter(item -> key(item).equals(target)).findFirst()
+                    .orElseThrow(() -> ApiException.validation("현재 추천 결과에 없는 콘텐츠입니다."));
 
             List<Recommendation> remaining = new ArrayList<>(current.stream()
                     .filter(item -> !key(item).equals(target)).toList());
@@ -58,7 +62,9 @@ public class ExclusionService {
             nextExcluded.add(target);
 
             var exclusion = new Exclusion(remaining, generator.analyze(session, remaining),
-                    pool.isEmpty() ? List.of() : pool.subList(1, pool.size()), nextExcluded);
+                    pool.isEmpty() ? List.of() : pool.subList(1, pool.size()), nextExcluded,
+                    new WatchedItem(seen.getTmdbId(), seen.getMediaType(), seen.getTitle(), seen.getPosterPath(),
+                            seen.getReleaseYear(), WatchedItem.stamp(clock.instant())));
             if (results.saveExclusion(userId, sessionId, session.getVersion(), exclusion)) {
                 return new RecommendationResponse(sessionId, exclusion.recommendations(), exclusion.analysis());
             }

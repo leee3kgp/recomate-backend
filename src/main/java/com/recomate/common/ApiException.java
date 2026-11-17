@@ -23,6 +23,9 @@ public class ApiException extends RuntimeException {
     public static ApiException notFound() {
         return new ApiException(404, "NOT_FOUND", "세션을 찾을 수 없습니다.");
     }
+    public static ApiException contentNotFound() {
+        return new ApiException(404, "NOT_FOUND", "콘텐츠를 찾을 수 없습니다.");
+    }
     public static ApiException recommendationExists() {
         return new ApiException(409, "RECOMMENDATION_EXISTS", "이미 추천 결과가 있습니다.");
     }

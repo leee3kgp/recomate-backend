@@ -27,7 +27,7 @@ class ExclusionServiceTest {
     private final SessionRepository sessions = mock(SessionRepository.class);
     private final RecommendationRepository results = mock(RecommendationRepository.class);
     private final RecommendationGenerator generator = mock(RecommendationGenerator.class);
-    private final ExclusionService service = new ExclusionService(sessions, results, generator);
+    private final ExclusionService service = new ExclusionService(sessions, results, generator, java.time.Clock.systemUTC());
     private final SessionAnalysis recomputed = new SessionAnalysis();
 
     @BeforeEach

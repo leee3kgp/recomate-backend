@@ -82,9 +82,9 @@ CORS의 기본 허용 주소는 `http://localhost:5173`, `http://127.0.0.1:5173`
 | 사용자 전용 테이블 | PK `userId`(String), status/email/nickname/genres 속성. `expiresAt`(Number, epoch seconds) TTL 활성화. 권장: on-demand, 삭제 방지, PITR, 기본 암호화 |
 | #3 공유 추천 세션 테이블 | PK `sessionId`(String). GSI `userId-createdAt-index`: PK userId, SK createdAt. participants/recommendations는 세션 안에 저장 |
 
-초기 프로필 생성은 조건부 PutItem, 닉네임·장르 변경은 ACTIVE 조건의 속성별 UpdateItem을 사용합니다. 사용자 읽기는 sub를 키로 한 강한 일관성 GetItem입니다. 세션 생성·추천 결과 저장은 사용자 ACTIVE 조건과 동일한 트랜잭션으로 수행합니다. 탈퇴 시에는 GSI 반영 지연으로 삭제가 누락되지 않도록 기본 세션 테이블을 강한 일관성 Scan으로 읽고 본인 항목만 삭제합니다. 전체 테이블 크기에 비례하는 비용·시간 제약은 세션 연결 문서를 확인합니다.
+초기 프로필 생성은 조건부 PutItem, 닉네임·장르·본 작품 자동 제외 설정 변경은 ACTIVE 조건의 속성별 UpdateItem을 사용합니다. 사용자 읽기는 sub를 키로 한 강한 일관성 GetItem입니다. 세션 생성·추천 결과 저장은 사용자 ACTIVE 조건과 동일한 트랜잭션으로 수행합니다. 탈퇴 시에는 GSI 반영 지연으로 삭제가 누락되지 않도록 기본 세션 테이블을 강한 일관성 Scan으로 읽고 본인 항목만 삭제합니다. 전체 테이블 크기에 비례하는 비용·시간 제약은 세션 연결 문서를 확인합니다.
 
-탈퇴는 DELETING으로 변경하면서 프로필·장르를 제거하고, 자기 userId의 세션 전체(저장된 추천 결과 포함), Cognito 사용자를 순서대로 삭제합니다. 모두 성공한 뒤 userId/status/expiresAt만 48시간 남겨 기존 토큰으로 재생성을 막습니다. TTL 삭제는 지연될 수 있으며, 항목이 남아 있는 동안 접근을 계속 차단합니다. 일부 실패 시 500을 반환하고 DELETING 상태를 유지합니다. 실패 상태에는 TTL을 설정하지 않습니다.
+탈퇴는 DELETING으로 변경하면서 프로필·장르·설정을 제거하고, 자기 userId의 세션 전체(저장된 추천 결과 포함), 본 작품 전체, Cognito 사용자를 순서대로 삭제합니다. 모두 성공한 뒤 userId/status/expiresAt만 48시간 남겨 기존 토큰으로 재생성을 막습니다. TTL 삭제는 지연될 수 있으며, 항목이 남아 있는 동안 접근을 계속 차단합니다. 일부 실패 시 500을 반환하고 DELETING 상태를 유지합니다. 실패 상태에는 TTL을 설정하지 않습니다.
 
 이는 프로필·계정 삭제의 확정된 상태 전이입니다. 세션 어댑터는 PR #9의 sessionId 구조와 세션 안의 추천 결과를 대상으로 합니다. 실제 추천 생성 담당 코드도 공통 RecommendationRepository를 사용해야 탈퇴 중 저장 차단을 유지할 수 있습니다. 탈퇴 상태 기록에 실패하면 외부 데이터 삭제를 시작하지 않고, 이미 DELETED인 사용자에게 같은 DELETE를 반복하면 외부 삭제를 다시 수행하지 않고 204를 반환합니다. 최초 요청도 모든 삭제 단계가 성공한 경우에만 204를 반환합니다.
 
@@ -96,7 +96,7 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 
 이 명령에도 실제 테이블 환경 변수와 AWS 접근 권한이 필요합니다. 네이티브 실행 시 사용할 개발자 프로필을 실행 환경에 지정하고, 배포 환경에서는 실행 역할을 사용합니다.
 
-백엔드 실행 역할에 필요한 작업은 사용자 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `ConditionCheckItem`, 공유 세션 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Scan`, `BatchWriteItem`, 해당 세션 GSI의 `dynamodb:Query`, 해당 User Pool의 `cognito-idp:AdminGetUser`, `AdminDeleteUser`입니다. 코드 분석 초안을 기반으로 배포 대상 리소스에 한정합니다.
+백엔드 실행 역할에 필요한 작업은 사용자 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `ConditionCheckItem`, 본 작품 테이블과 그 로컬 인덱스의 `dynamodb:Query`, `PutItem`, `DeleteItem`, `BatchWriteItem`, 공유 세션 테이블의 `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Scan`, `BatchWriteItem`, 해당 세션 GSI의 `dynamodb:Query`, 해당 User Pool의 `cognito-idp:AdminGetUser`, `AdminDeleteUser`입니다. 코드 분석 초안을 기반으로 배포 대상 리소스에 한정합니다.
 
 **BE2 연결:** POST /api/sessions는 기존 프로필 초기화와 공통 인증을 사용합니다. 세션·추천 쓰기는 사용자 ACTIVE 조건 트랜잭션으로 저장하고, 공통 필터도 모든 `/api/**` 경로에서 탈퇴 상태를 검사합니다. 추천 생성 경로는 `TmdbRecommendationGenerator`로 #13의 TMDB 조회·점수 계산과 저장을 연결합니다. 실제 호출에는 `TMDB_ACCESS_TOKEN` 환경 변수가 필요합니다.
 
@@ -110,7 +110,7 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 
 컨테이너 CI는 Compose v2.39.4를 명시하고 CodeBuild와 같은 401·CORS 검증 스크립트를 사용합니다. Compose 설정 검사와 actionlint 1.7.12 문법 검사는 기존 검증에서 통과했습니다. main을 반영한 장르 브랜치 커밋 `4206389`의 [GitHub Actions 실행](https://github.com/leee3kgp/recomate-backend/actions/runs/40835162023)에서도 `dynamodb-integration`과 `build-and-start`가 모두 성공했습니다. 실제 BE2 구조의 저장·탈퇴 통합은 위 검증에 포함되며 팀 코드 리뷰와 FE 브라우저 화면 연결은 별도입니다.
 
-개발용 API 기준 주소는 `https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev`이며, 예를 들어 프로필 경로는 이 주소 뒤에 `/api/users/me`를 붙입니다. 현재 사용 테이블은 `recomate-user-api-dev-users`, `RecommendationSession`입니다. 로컬에서 같은 테이블을 쓰려면 이 이름을 USERS_TABLE·SESSIONS_TABLE에 지정하고 별도의 개발자 인증을 연결합니다. 이전 `recomate-user-api-dev-validation-sessions`는 보존하지만 라이브 API는 사용하지 않습니다. Lambda 메모리는 기존 3008 MiB를 유지했습니다. 2026-10-28 배포 당시 최초 세션 사전 요청은 약 12.7초, 재검증의 사전 요청은 약 0.3초였습니다. 장르 추가 배포 후 첫 사전 요청은 약 9.8초였습니다. 이는 개별 측정이며 부하·동시 콜드 스타트 성능은 별도 검증 대상입니다.
+개발용 API 기준 주소는 `https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev`이며, 예를 들어 프로필 경로는 이 주소 뒤에 `/api/users/me`를 붙입니다. 현재 사용 테이블은 `recomate-user-api-dev-users`, `RecommendationSession`, `recomate-user-api-dev-watched`입니다. 로컬에서 같은 테이블을 쓰려면 이 이름을 USERS_TABLE·SESSIONS_TABLE·WATCHED_TABLE에 지정하고 별도의 개발자 인증을 연결합니다. 이전 `recomate-user-api-dev-validation-sessions`는 보존하지만 라이브 API는 사용하지 않습니다. Lambda 메모리는 기존 3008 MiB를 유지했습니다. 2026-10-28 배포 당시 최초 세션 사전 요청은 약 12.7초, 재검증의 사전 요청은 약 0.3초였습니다. 장르 추가 배포 후 첫 사전 요청은 약 9.8초였습니다. 이는 개별 측정이며 부하·동시 콜드 스타트 성능은 별도 검증 대상입니다.
 
 ## 관련 문서
 
@@ -120,6 +120,7 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 - ["이미 봤어요" 제외 API](exclusion-api.md)
 - [비회원 추천 API](guest-recommendation-api.md)
 - [인기 목록 API](popular-api.md)
+- [본 작품 API](watched-api.md)
 - [프론트엔드 배포](frontend-deployment.md)
 - [배포 환경 자동 점검](live-check.md)
 - [사용자 API와 세션 연결](session-integration.md)

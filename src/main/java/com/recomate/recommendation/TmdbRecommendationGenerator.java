@@ -36,12 +36,15 @@ public class TmdbRecommendationGenerator implements RecommendationGenerator {
     }
 
     @Override
-    public Result generate(RecommendationSession session) {
+    public Result generate(RecommendationSession session, Set<String> excluded) {
         Map<Integer, Set<Genre>> participants = participants(session);
         Set<Genre> genres = EnumSet.noneOf(Genre.class);
         participants.values().forEach(genres::addAll);
+        // Filter before scoring so balanced picking (#35) only ever sees allowed titles.
         List<TmdbContent> candidates = Stream.of(ContentType.values())
-                .flatMap(type -> tmdb.discover(type, genres).stream()).toList();
+                .flatMap(type -> tmdb.discover(type, genres).stream())
+                .filter(content -> !excluded.contains(RecommendationSession.contentKey(content.type().value(), content.id())))
+                .toList();
         List<Scored> ranked = scorer.top(participants, candidates, Integer.MAX_VALUE);
         List<Scored> top = scorer.pickBalanced(ranked, participants.keySet(), LIMIT);
         List<Recommendation> recommendations = IntStream.range(0, top.size())
