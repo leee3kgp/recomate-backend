@@ -23,4 +23,9 @@ public interface TmdbClient {
     default Optional<TmdbContent> details(ContentType type, long id) {
         throw new UnsupportedOperationException("Detail lookup is not supported by this client");
     }
+
+    /** 작품 상세 화면용 정보(줄거리·출연진·한국 OTT 포함)를 한 번에 조회한다. TMDB에 없거나 성인 콘텐츠면 비어 있다. */
+    default Optional<TmdbContentDetail> contentDetail(ContentType type, long id) {
+        throw new UnsupportedOperationException("Content detail lookup is not supported by this client");
+    }
 }

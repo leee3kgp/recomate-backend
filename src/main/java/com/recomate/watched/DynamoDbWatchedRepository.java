@@ -86,6 +86,16 @@ public class DynamoDbWatchedRepository implements WatchedRepository {
     }
 
     @Override
+    public boolean contains(String userId, String contentKey) {
+        // Query on the full primary key reuses the existing Query permission instead of adding GetItem.
+        var result = db.query(QueryRequest.builder().tableName(table).consistentRead(true)
+                .keyConditionExpression("userId = :owner AND contentKey = :key")
+                .expressionAttributeValues(Map.of(":owner", text(userId), ":key", text(contentKey)))
+                .projectionExpression("contentKey").build());
+        return !result.items().isEmpty();
+    }
+
+    @Override
     public Set<String> keys(String userId) {
         Set<String> keys = new HashSet<>();
         Map<String, AttributeValue> cursor = Map.of();

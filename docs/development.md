@@ -121,6 +121,7 @@ java -jar build/libs/recomate.jar --spring.main.web-application-type=none --reco
 - [비회원 추천 API](guest-recommendation-api.md)
 - [인기 목록 API](popular-api.md)
 - [본 작품 API](watched-api.md)
+- [작품 상세 API](content-detail-api.md)
 - [프론트엔드 배포](frontend-deployment.md)
 - [배포 환경 자동 점검](live-check.md)
 - [사용자 API와 세션 연결](session-integration.md)

@@ -47,6 +47,10 @@ info:
     (/api/users/me/settings). A successful "이미 봤어요" exclusion also saves that title to the
     watched list in the same transaction. When settings.excludeWatched is true (the default),
     new recommendations leave watched titles out before scoring. Withdrawal erases the list.
+    Issue #38 adds GET /api/contents/{mediaType}/{tmdbId}, the content detail screen data from
+    one TMDB call (credits and Korean subscription providers included). It needs a login like
+    the popular list; guests see a login prompt in the frontend. Title data is cached in
+    instance memory for 30 minutes per title, while the caller's watched flag is read each time.
 servers:
   - url: http://localhost:8080
   - url: https://rdjkqhp2el.execute-api.ap-southeast-2.amazonaws.com/dev
@@ -143,6 +147,74 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
         '502':
           description: UPSTREAM_ERROR - TMDB could not be reached or rejected the request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/contents/{mediaType}/{tmdbId}:
+    get:
+      operationId: getContentDetail
+      summary: Movie or TV detail for the content detail screen
+      description: |
+        Fetches one title from TMDB in a single call (language ko-KR, credits and watch providers
+        appended). Adult titles are treated as missing. Missing TMDB values are omitted from the
+        response; list fields are empty arrays instead. genres are TMDB Korean display names,
+        not RecoMate genre codes. providers lists Korean subscription (flatrate) services only,
+        ordered by TMDB display priority; rent and buy offers are left out. creators are movie
+        directors or TV creators (at most three); cast is billing order (at most five).
+        Requires a login; the shared user-status check rejects withdrawing/withdrawn users.
+        Title data is identical for every user and is kept in instance memory for 30 minutes per
+        mediaType:tmdbId. NOT_FOUND and TMDB failures are not cached. watched is read from the
+        caller's watched list on every request, so the response is no-store.
+      parameters:
+        - in: path
+          name: mediaType
+          required: true
+          schema: { type: string, enum: [movie, tv] }
+        - in: path
+          name: tmdbId
+          required: true
+          schema: { type: string, pattern: '^[1-9][0-9]{0,17}$' }
+      responses:
+        '200':
+          description: Content detail
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentDetail' }
+              example:
+                tmdbId: 603
+                mediaType: movie
+                title: 매트릭스
+                originalTitle: The Matrix
+                overview: 예시 줄거리
+                posterPath: /example.jpg
+                releaseDate: '1999-03-31'
+                releaseYear: 1999
+                voteAverage: 8.2
+                voteCount: 26000
+                genres: [액션, SF]
+                runtime: 136
+                creators: [Lana Wachowski, Lilly Wachowski]
+                cast: [{ name: 키아누 리브스, character: Neo, profilePath: /example-cast.jpg }]
+                providers: [{ id: 8, name: Netflix, logoPath: /example-logo.jpg }]
+                watched: false
+        '400':
+          description: VALIDATION_ERROR - mediaType is not movie/tv or tmdbId is not a positive integer; TMDB is not called
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: VALIDATION_ERROR, message: 콘텐츠 유형과 ID를 확인해주세요. } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: NOT_FOUND - TMDB has no such title (or it is adult content)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: NOT_FOUND, message: 콘텐츠를 찾을 수 없습니다. } }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '502':
+          description: UPSTREAM_ERROR - TMDB could not be reached
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -883,6 +955,50 @@ components:
       required: [excludeWatched]
       properties:
         excludeWatched: { type: boolean, default: true, description: Leave watched titles out of new recommendations }
+    ContentDetail:
+      type: object
+      additionalProperties: false
+      required: [tmdbId, mediaType, title, voteAverage, voteCount, genres, creators, cast, providers, watched]
+      properties:
+        tmdbId: { type: integer, minimum: 1 }
+        mediaType: { type: string, enum: [movie, tv] }
+        title: { type: string }
+        originalTitle: { type: string }
+        overview: { type: string, description: Korean overview; omitted when TMDB has none }
+        posterPath: { type: string }
+        backdropPath: { type: string }
+        releaseDate: { type: string, format: date, description: Movie release date or TV first air date }
+        releaseYear: { type: integer }
+        voteAverage: { type: number }
+        voteCount: { type: integer, minimum: 0 }
+        genres: { type: array, items: { type: string }, description: TMDB Korean genre names for display }
+        runtime: { type: integer, minimum: 1, description: Minutes; per episode for TV }
+        seasons: { type: integer, minimum: 1, description: TV only }
+        episodes: { type: integer, minimum: 1, description: TV only }
+        creators: { type: array, maxItems: 3, items: { type: string }, description: Movie directors or TV creators }
+        cast:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            additionalProperties: false
+            required: [name]
+            properties:
+              name: { type: string }
+              character: { type: string }
+              profilePath: { type: string }
+        providers:
+          type: array
+          description: Korean subscription (flatrate) providers from TMDB (JustWatch data)
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name]
+            properties:
+              id: { type: integer, description: TMDB provider_id }
+              name: { type: string }
+              logoPath: { type: string }
+        watched: { type: boolean, description: Whether the caller saved this title as watched }
     Error:
       type: object
       additionalProperties: false

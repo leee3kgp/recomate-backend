@@ -14,6 +14,9 @@ public interface WatchedRepository {
     /** Idempotent: deleting a missing title succeeds. */
     void delete(String userId, String contentKey);
 
+    /** Whether one title is saved, for the content detail screen. */
+    boolean contains(String userId, String contentKey);
+
     /** All contentKeys, for excluding watched titles from new recommendations. */
     Set<String> keys(String userId);
 

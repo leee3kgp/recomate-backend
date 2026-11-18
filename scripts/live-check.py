@@ -129,7 +129,8 @@ def check_unauthenticated(c, args, http):
                  ("POST", session + "/recommendations"), ("POST", session + "/exclusions"), ("GET", "/api/popular"),
                  ("GET", "/api/users/me/watched"), ("POST", "/api/users/me/watched"),
                  ("DELETE", "/api/users/me/watched/movie/603"),
-                 ("GET", "/api/users/me/settings"), ("PATCH", "/api/users/me/settings")]
+                 ("GET", "/api/users/me/settings"), ("PATCH", "/api/users/me/settings"),
+                 ("GET", "/api/contents/movie/603")]
     routes = protected + [("GET", "/api/genres"), ("POST", "/api/guest/recommendations")]
     for method, path in protected:
         r = http.request(method, args.api_base + path, json={} if method in ("POST", "PUT", "PATCH") else None, timeout=60)
@@ -295,6 +296,10 @@ def check_watched(c, args, http, user, excluded):
     c.check("watched add rejects a bad media type", r.status_code == 400, r.status_code)
     r = http.delete(url + "/movie/abc", headers=user.headers(), timeout=60)
     c.check("watched delete rejects a bad id", r.status_code == 400, r.status_code)
+    for label, path in [("a bad media type", "/MOVIE/603"), ("a bad id", "/movie/0")]:
+        r = http.get(base + "/api/contents" + path, headers=user.headers(), timeout=60)
+        c.check(f"content detail rejects {label}", r.status_code == 400 and error_code(r) == "VALIDATION_ERROR",
+                r.status_code)
     if args.skip_recommendation:
         print("SKIP TMDB-backed watched checks (--skip-recommendation)")
     else:
@@ -320,6 +325,7 @@ def check_watched(c, args, http, user, excluded):
         c.check("watched response allows the frontend origin", r.headers.get("Access-Control-Allow-Origin") == origin)
         r, keys = watched_keys(http, args, user)
         c.check("added title is listed first", r.status_code == 200 and keys[:1] == [("tv", 1399)], r.status_code)
+        check_content_detail(c, args, http, user, watched=True)
         r = http.post(url, headers=user.headers(), json={"tmdbId": 999999999, "mediaType": "movie"}, timeout=60)
         c.check("unknown TMDB title is 404", r.status_code == 404 and error_code(r) == "NOT_FOUND", r.status_code)
     for attempt in ("", "repeated "):
@@ -327,10 +333,35 @@ def check_watched(c, args, http, user, excluded):
         c.check(f"{attempt}watched delete is 204", r.status_code == 204, r.status_code)
     r, keys = watched_keys(http, args, user)
     c.check("deleted title is gone", r.status_code == 200 and ("tv", 1399) not in keys, r.status_code)
+    if not args.skip_recommendation:
+        check_content_detail(c, args, http, user, watched=False)
     r = http.patch(base + "/api/users/me/settings", headers=user.headers(), json={"excludeWatched": False}, timeout=60)
     c.check("auto-exclude can be turned off", r.status_code == 200 and r.json() == {"excludeWatched": False}, r.status_code)
     r = http.get(base + "/api/users/me/settings", headers=user.headers(), timeout=60)
     c.check("setting is returned on reload", r.status_code == 200 and r.json() == {"excludeWatched": False}, r.status_code)
+
+
+def check_content_detail(c, args, http, user, watched):
+    """Content detail (#38): one TMDB-backed call for tv/1399, then the cached title with a fresh watched flag."""
+    url = args.api_base + "/api/contents/tv/1399"
+    if watched:
+        c.section("content detail")
+        origin = args.origins[0]
+        r = http.get(url, headers=user.headers(origin), timeout=60)
+        data = r.json() if r.status_code == 200 else {}
+        c.check("content detail returns the screen fields", r.status_code == 200 and data.get("tmdbId") == 1399
+                and data.get("mediaType") == "tv" and bool(data.get("title")) and (data.get("seasons") or 0) > 0
+                and isinstance(data.get("cast"), list) and isinstance(data.get("providers"), list), r.status_code)
+        c.check("content detail marks the saved title as watched", data.get("watched") is True, data.get("watched"))
+        c.check("content detail is not cached and allows the frontend origin",
+                "no-store" in r.headers.get("Cache-Control", "")
+                and r.headers.get("Access-Control-Allow-Origin") == origin)
+        r = http.get(args.api_base + "/api/contents/movie/999999999", headers=user.headers(), timeout=60)
+        c.check("unknown content detail is 404", r.status_code == 404 and error_code(r) == "NOT_FOUND", r.status_code)
+    else:
+        r = http.get(url, headers=user.headers(), timeout=60)
+        c.check("content detail shows the removed title as not watched",
+                r.status_code == 200 and r.json().get("watched") is False, r.status_code)
 
 
 def check_popular(c, args, http, user):
