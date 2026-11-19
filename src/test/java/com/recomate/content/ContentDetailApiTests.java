@@ -54,7 +54,7 @@ class ContentDetailApiTests {
         return new TmdbContentDetail(603, ContentType.MOVIE, "매트릭스", "The Matrix", "가상 현실", "/p.jpg", null,
                 "1999-03-31", 1999, 8.2, 26000, List.of("액션", "SF"), 136, null, null, List.of("Lana Wachowski"),
                 List.of(new TmdbContentDetail.Cast("키아누 리브스", "Neo", null)),
-                List.of(new TmdbContentDetail.Provider(8, "Netflix", "/n.jpg")));
+                List.of(new TmdbContentDetail.Provider(8, "Netflix", "/n.jpg")), List.of("US"));
     }
 
     @Test
@@ -86,6 +86,7 @@ class ContentDetailApiTests {
                 .andExpect(jsonPath("$.cast[0].profilePath").doesNotExist())
                 .andExpect(jsonPath("$.providers[0].name").value("Netflix"))
                 .andExpect(jsonPath("$.providers[0].id").value(8))
+                .andExpect(jsonPath("$.countries[0]").value("US"))
                 .andExpect(jsonPath("$.watched").value(true))
                 // Missing TMDB values are omitted rather than sent as null.
                 .andExpect(jsonPath("$.backdropPath").doesNotExist())

@@ -351,7 +351,8 @@ def check_content_detail(c, args, http, user, watched):
         data = r.json() if r.status_code == 200 else {}
         c.check("content detail returns the screen fields", r.status_code == 200 and data.get("tmdbId") == 1399
                 and data.get("mediaType") == "tv" and bool(data.get("title")) and (data.get("seasons") or 0) > 0
-                and isinstance(data.get("cast"), list) and isinstance(data.get("providers"), list), r.status_code)
+                and isinstance(data.get("cast"), list) and isinstance(data.get("providers"), list)
+                and "US" in (data.get("countries") or []), r.status_code)
         c.check("content detail marks the saved title as watched", data.get("watched") is True, data.get("watched"))
         c.check("content detail is not cached and allows the frontend origin",
                 "no-store" in r.headers.get("Cache-Control", "")
