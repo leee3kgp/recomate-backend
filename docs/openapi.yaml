@@ -159,7 +159,8 @@ paths:
         appended). Adult titles are treated as missing. Missing TMDB values are omitted from the
         response; list fields are empty arrays instead. genres are TMDB Korean display names,
         not RecoMate genre codes. providers lists Korean subscription (flatrate) services only,
-        ordered by TMDB display priority; rent and buy offers are left out. creators are movie
+        ordered by TMDB display priority; rent and buy offers are left out. countries are two-letter
+        country codes of origin (production countries when TMDB has no origin). creators are movie
         directors or TV creators (at most three); cast is billing order (at most five).
         Requires a login; the shared user-status check rejects withdrawing/withdrawn users.
         Title data is identical for every user and is kept in instance memory for 30 minutes per
@@ -198,6 +199,7 @@ paths:
                 creators: [Lana Wachowski, Lilly Wachowski]
                 cast: [{ name: 키아누 리브스, character: Neo, profilePath: /example-cast.jpg }]
                 providers: [{ id: 8, name: Netflix, logoPath: /example-logo.jpg }]
+                countries: [US]
                 watched: false
         '400':
           description: VALIDATION_ERROR - mediaType is not movie/tv or tmdbId is not a positive integer; TMDB is not called
@@ -958,7 +960,7 @@ components:
     ContentDetail:
       type: object
       additionalProperties: false
-      required: [tmdbId, mediaType, title, voteAverage, voteCount, genres, creators, cast, providers, watched]
+      required: [tmdbId, mediaType, title, voteAverage, voteCount, genres, creators, cast, providers, countries, watched]
       properties:
         tmdbId: { type: integer, minimum: 1 }
         mediaType: { type: string, enum: [movie, tv] }
@@ -998,6 +1000,12 @@ components:
               id: { type: integer, description: TMDB provider_id }
               name: { type: string }
               logoPath: { type: string }
+        countries:
+          type: array
+          description: >-
+            Two-letter ISO 3166-1 codes of origin from TMDB origin_country (the popular list's country
+            filter basis), falling back to production countries; empty when TMDB has neither
+          items: { type: string, pattern: '^[A-Z]{2}$' }
         watched: { type: boolean, description: Whether the caller saved this title as watched }
     Error:
       type: object

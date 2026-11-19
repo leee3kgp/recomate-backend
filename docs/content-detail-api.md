@@ -34,6 +34,7 @@
   "providers": [
     { "id": 8, "name": "Netflix", "logoPath": "/pbpMk2JmcoNnQwx5JGpXngfoWtp.jpg" }
   ],
+  "countries": ["US"],
   "watched": false
 }
 ```
@@ -50,9 +51,10 @@
 | `creators` | 영화는 감독, TV는 제작자(created by)이며 최대 3명입니다. |
 | `cast` | 주요 출연진을 크레딧 순서대로 최대 5명. `character`(배역)·`profilePath`는 없으면 빠집니다. |
 | `providers` | 한국에서 **구독형**으로 볼 수 있는 OTT(넷플릭스·왓챠 등)입니다. 대여·구매는 포함하지 않으며, 없으면 빈 배열입니다. 정보 출처는 TMDB(JustWatch 제공)입니다. |
+| `countries` | 작품의 원산지 국가 코드(ISO 3166-1 두 글자, 예: `US`, `KR`) 목록입니다. TMDB `origin_country` 기준으로 인기 목록의 국가 필터와 같고, 없으면 제작 국가(`production_countries`)로 대신합니다. 둘 다 없으면 빈 배열입니다. 한국어 이름은 프론트에서 `new Intl.DisplayNames(["ko"], { type: "region" }).of("US")` → "미국"처럼 바꿔 씁니다. |
 | `watched` | 요청한 사용자가 이 작품을 본 작품에 저장했는지입니다(항상 있음). 본 작품 저장·삭제는 [본 작품 API](watched-api.md)를 씁니다. |
 
-값이 없는 필드는 `null` 대신 응답에서 빠지고, 목록 필드(`genres`, `creators`, `cast`, `providers`)는 빈 배열입니다.
+값이 없는 필드는 `null` 대신 응답에서 빠지고, 목록 필드(`genres`, `creators`, `cast`, `providers`, `countries`)는 빈 배열입니다.
 
 ## 오류
 
@@ -77,6 +79,7 @@
 
 ## 검증
 
-- 자동 테스트: `ContentDetailApiTests`(인증, 응답 필드, `watched`, 캐시 적중과 `watched` 매번 조회, 영화·TV 구분, 404·502 미캐시, 입력 검사, 탈퇴 사용자), `RestClientTmdbClientDetailTest`(로컬 HTTP 서버로 실제 TMDB 클라이언트의 단일 호출·영화/TV 필드 변환·출연진 순서와 개수·한국 구독형 OTT만 추출·404·성인물·502), `DynamoDbLocalTests`(본 작품 한 편 조회).
+- 자동 테스트: `ContentDetailApiTests`(인증, 응답 필드, `watched`, 캐시 적중과 `watched` 매번 조회, 영화·TV 구분, 404·502 미캐시, 입력 검사, 탈퇴 사용자), `RestClientTmdbClientDetailTest`(로컬 HTTP 서버로 실제 TMDB 클라이언트의 단일 호출·영화/TV 필드 변환·출연진 순서와 개수·한국 구독형 OTT만 추출·국가 코드 정리와 제작 국가 대체·404·성인물·502), `DynamoDbLocalTests`(본 작품 한 편 조회).
 - dev 배포(2026-11-17, 이미지 `src-737368404129a649`, 배포 ID `jgo2is`): 배포 환경 자동 점검 121개를 모두 통과했습니다. 상세 기록은 [컨테이너 배포](container-deployment.md#작품-상세-api-배포-2026-11-17)를 참고합니다.
+- dev 배포(2026-11-19, 이미지 `src-63f20b6cb42b8c57`): 국가 정보(#40) 반영 후 배포 환경 자동 점검 121개를 모두 통과했습니다.
 - [배포 환경 자동 점검](live-check.md): 새 경로의 401·CORS, 입력 검사 400, TV 작품 상세 필드와 본 작품 표시, 없는 작품 404, 본 작품 삭제 후 `watched` false를 확인합니다.

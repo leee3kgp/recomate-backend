@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -147,7 +148,24 @@ public class RestClientTmdbClient implements TmdbClient {
                 blankToNull(movie ? body.originalTitle() : body.originalName()), blankToNull(body.overview()),
                 body.posterPath(), body.backdropPath(), date, year, body.voteAverage(), body.voteCount(), genres,
                 runtime, movie ? null : positive(body.numberOfSeasons()), movie ? null : positive(body.numberOfEpisodes()),
-                creators, cast, providers);
+                creators, cast, providers, countriesIn(body));
+    }
+
+    /**
+     * Country codes of origin, the same basis as the popular list's with_origin_country filter.
+     * Falls back to production countries when TMDB has no origin country.
+     */
+    private static List<String> countriesIn(FullDetail body) {
+        List<String> origin = countryCodes(body.originCountry() == null ? List.of() : body.originCountry());
+        if (!origin.isEmpty()) return origin;
+        return countryCodes(body.productionCountries() == null ? List.of()
+                : body.productionCountries().stream().map(CountryRef::iso).toList());
+    }
+
+    /** Two-letter ISO 3166-1 codes only, upper case, without duplicates. */
+    private static List<String> countryCodes(List<String> raw) {
+        return raw.stream().filter(Objects::nonNull).map(code -> code.strip().toUpperCase(Locale.ROOT))
+                .filter(code -> code.matches("[A-Z]{2}")).distinct().toList();
     }
 
     /** Subscription (flatrate) services in Korea only; rent and buy offers are left out. */
@@ -222,7 +240,12 @@ public class RestClientTmdbClient implements TmdbClient {
                       @JsonProperty("number_of_episodes") Integer numberOfEpisodes,
                       @JsonProperty("created_by") List<PersonRef> createdBy,
                       Credits credits,
-                      @JsonProperty("watch/providers") WatchProviders watchProviders) {}
+                      @JsonProperty("watch/providers") WatchProviders watchProviders,
+                      @JsonProperty("origin_country") List<String> originCountry,
+                      @JsonProperty("production_countries") List<CountryRef> productionCountries) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CountryRef(@JsonProperty("iso_3166_1") String iso) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record Credits(List<CastRef> cast, List<CrewRef> crew) {}

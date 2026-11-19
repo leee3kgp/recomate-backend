@@ -4,6 +4,12 @@
 
 로컬 준비와 실행 명령은 [개발 환경](development.md)을 참고합니다.
 
+## 작품 상세 국가 정보 배포 (2026-11-19)
+
+[#40](https://github.com/leee3kgp/recomate-backend/issues/40)의 작품 상세 응답 `countries`(원산지 국가 코드, 없으면 제작 국가)를 반영한 이미지로 Lambda만 업데이트했습니다. 경로·권한·테이블·환경 변수·Cognito·CORS·TMDB 토큰(`UsePreviousValue`)·Stage 배포는 변경하지 않아 dev 배포 ID는 `jgo2is` 그대로입니다.
+
+현재 이미지는 `feature/content-detail-country` 작업 트리 기준 `src-63f20b6cb42b8c57`, digest `sha256:f4783233c30f4c38a546571e54ef5a83a788bf3b4f0e348cd61084d67fed653e`입니다. CodeBuild `c8d8f3a2-a279-4728-a117-e479e79f4939`의 빌드·테스트·읽기 전용 컨테이너 검사가 통과했습니다. 배포 전 Gradle 테스트 269개 실패 0개(DynamoDB Local 23개는 로컬 미실행, CI에서 실행), OpenAPI 3.1 검증을 확인했습니다. 변경 계획 `content-country-src-63f20b6cb42b8c57`은 교체·추가·삭제 없이 Lambda 이미지만 바꿨고(기존 메서드는 Lambda ARN 참조로 변경 후보에 표시됐지만 실제 변경 없음), 스택 UPDATE_COMPLETE·Lambda Active/Successful입니다. 배포 후 [배포 환경 자동 점검](live-check.md) 121개를 모두 통과했습니다.
+
 ## 작품 상세 API 배포 (2026-11-17)
 
 [#38](https://github.com/leee3kgp/recomate-backend/issues/38)의 `GET /api/contents/{mediaType}/{tmdbId}`(GET은 Cognito Authorizer, OPTIONS는 인증 없음)를 반영하고 새 배포 스냅샷 `ApiDeploymentContentDetailV1`을 dev Stage에 적용했습니다. 현재 dev 배포 ID는 `jgo2is`입니다. Lambda 호출 권한은 `/api/contents/*` 경로로 제한해 추가했습니다. 실행 역할·테이블·환경 변수·Cognito·CORS·TMDB 토큰(`UsePreviousValue`)·Stage 호출 제한은 변경하지 않았습니다. 본 작품 여부는 기존 본 작품 테이블 `Query` 권한으로 조회하고, 작품 정보 캐시 보관 시간은 기본값 30분을 사용합니다.

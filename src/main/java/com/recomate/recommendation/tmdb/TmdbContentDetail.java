@@ -11,12 +11,13 @@ public record TmdbContentDetail(long id, ContentType type, String title, String 
                                 String posterPath, String backdropPath, String releaseDate, Integer releaseYear,
                                 double voteAverage, int voteCount, List<String> genres, Integer runtime,
                                 Integer seasons, Integer episodes, List<String> creators, List<Cast> cast,
-                                List<Provider> providers) {
+                                List<Provider> providers, List<String> countries) {
     public TmdbContentDetail {
         genres = List.copyOf(genres);
         creators = List.copyOf(creators);
         cast = List.copyOf(cast);
         providers = List.copyOf(providers);
+        countries = List.copyOf(countries);
     }
 
     /** 주요 출연진 한 명. character는 배역 이름이다. */

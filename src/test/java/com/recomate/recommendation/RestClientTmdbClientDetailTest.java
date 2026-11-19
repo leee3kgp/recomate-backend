@@ -25,6 +25,7 @@ class RestClientTmdbClientDetailTest {
 
     private static final String MOVIE = """
             {"id": 603, "title": "매트릭스", "original_title": "The Matrix", "adult": false,
+             "origin_country": ["us", "US", "USA", ""], "production_countries": [{"iso_3166_1": "AU", "name": "Australia"}],
              "overview": "가상 현실을 깨닫는 이야기", "poster_path": "/poster.jpg", "backdrop_path": "/back.jpg",
              "release_date": "1999-03-31", "vote_average": 8.2, "vote_count": 26000, "runtime": 136,
              "genres": [{"id": 28, "name": "액션"}, {"id": 878, "name": "SF"}],
@@ -45,6 +46,7 @@ class RestClientTmdbClientDetailTest {
 
     private static final String TV = """
             {"id": 1399, "name": "왕좌의 게임", "original_name": "Game of Thrones", "adult": false, "overview": "",
+             "origin_country": [], "production_countries": [{"iso_3166_1": "GB", "name": "United Kingdom"}, {"iso_3166_1": "US", "name": "United States of America"}],
              "first_air_date": "2011-04-17", "vote_average": 8.5, "vote_count": 25000,
              "episode_run_time": [0, 60], "number_of_seasons": 8, "number_of_episodes": 73,
              "created_by": [{"name": "David Benioff"}, {"name": "D. B. Weiss"}],
@@ -108,6 +110,8 @@ class RestClientTmdbClientDetailTest {
         // Korea only, subscription only, TMDB display priority order.
         assertThat(detail.providers()).containsExactly(new TmdbContentDetail.Provider(8, "Netflix", "/n.jpg"),
                 new TmdbContentDetail.Provider(97, "Watcha", "/w.jpg"));
+        // Origin country wins over production countries; codes are upper-cased, deduplicated and two letters only.
+        assertThat(detail.countries()).containsExactly("US");
     }
 
     @Test
@@ -126,6 +130,8 @@ class RestClientTmdbClientDetailTest {
         assertThat(detail.cast()).isEmpty();
         assertThat(detail.providers()).isEmpty();
         assertThat(detail.posterPath()).isNull();
+        // No origin country: production countries are used instead.
+        assertThat(detail.countries()).containsExactly("GB", "US");
     }
 
     @Test
