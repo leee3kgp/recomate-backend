@@ -1,11 +1,11 @@
 # 인기 목록 API
 
-`GET /api/popular`는 장르와 국가로 거른 인기 영화·TV 목록을 반환합니다. 메인 화면의 장르·국가별 인기 목록에 쓰며 **로그인(Cognito ID Token)이 필요합니다.** 비회원은 이 API를 호출하지 않고, 화면에서 블러 처리한 미리보기만 보여줍니다. 전체 스키마는 [OpenAPI](openapi.yaml)의 `listPopular`를 따릅니다. 구현 이슈는 [#24](https://github.com/leee3kgp/recomate-backend/issues/24)입니다.
+`GET /api/popular`는 장르·국가·종류(영화/TV)로 거르고 인기·평점·최신순으로 정렬한 영화·TV 목록을 반환합니다. 메인 화면의 장르·국가별 인기 목록에 쓰며 **로그인(Cognito ID Token)이 필요합니다.** 비회원은 이 API를 호출하지 않고, 화면에서 블러 처리한 미리보기만 보여줍니다. 전체 스키마는 [OpenAPI](openapi.yaml)의 `listPopular`를 따릅니다. 구현 이슈는 [#24](https://github.com/leee3kgp/recomate-backend/issues/24)이고, 종류·정렬 필터는 후속 이슈에서 추가했습니다.
 
 ## 요청
 
 ```http
-GET /api/popular?genre=ACTION&country=KR
+GET /api/popular?genre=ACTION&country=KR&type=tv&sort=rating
 Authorization: Bearer <Cognito ID Token>
 ```
 
@@ -13,34 +13,46 @@ Authorization: Bearer <Cognito ID Token>
 | --- | --- | --- |
 | `genre` | 아니오 | 장르 마스터 코드 10개 중 하나 (`ACTION`, `SF` …). 대소문자 구분 없음 |
 | `country` | 아니오 | 두 글자 ISO 3166-1 국가 코드 (`KR`, `US`, `JP` …). 대소문자 구분 없음 |
+| `type` | 아니오 | `movie` 또는 `tv`. 없으면 영화와 TV를 합칩니다. 대소문자 구분 없음 |
+| `sort` | 아니오 | `popular`(인기순, 기본값), `rating`(평점순), `latest`(최신순). 대소문자 구분 없음 |
 
-- 두 파라미터는 함께 쓰거나 하나만 쓸 수 있고, 둘 다 없으면 전체 인기 목록입니다.
+- 네 파라미터는 자유롭게 조합할 수 있고, 모두 없으면 전체 인기 목록입니다.
 - 비어 있거나 공백뿐인 값은 "필터 없음"으로 처리합니다.
 
 ## 응답
 
-상태 코드 `200`, JSON UTF-8입니다. 필터 값은 대문자로 되돌려 주고, 필터가 없으면 `null`입니다.
+상태 코드 `200`, JSON UTF-8입니다. `genre`·`country`는 대문자, `type`·`sort`는 소문자로 되돌려 줍니다. 필터가 없으면 `null`이고, `sort`는 생략해도 `popular`가 들어갑니다.
 
 ```json
 {
   "genre": "ACTION",
   "country": "KR",
+  "type": "tv",
+  "sort": "rating",
   "items": [
     { "id": 1399, "type": "tv", "title": "예시 드라마", "posterPath": "/example.jpg", "releaseYear": 2024, "voteAverage": 8.1 }
   ]
 }
 ```
 
-- `items`는 영화와 TV를 합쳐 TMDB 인기순으로 정렬한 최대 20개입니다. 조건에 맞는 작품이 없으면 빈 배열입니다.
+- `items`는 최대 20개입니다. `type`이 없으면 영화와 TV를 각각 조회한 뒤 같은 정렬 기준으로 합칩니다. 조건에 맞는 작품이 없으면 빈 배열입니다.
 - `id`는 `type`(`movie`/`tv`)과 함께 써야 고유합니다. 포스터는 `posterPath` 앞에 TMDB 이미지 주소를 붙여 표시합니다.
-- 로맨스·공포처럼 TV 장르 매핑이 없는 장르는 영화만 조회합니다. 기존 추천 규칙과 같습니다.
-- 조회 기준은 추천과 같습니다 (한국어, 평가 수 200 이상, 성인물 제외).
+- 로맨스·공포처럼 TV 장르 매핑이 없는 장르는 영화만 조회합니다. 기존 추천 규칙과 같습니다. 이런 장르에 `type=tv`를 주면 빈 배열입니다.
+- 공통 조회 기준은 한국어, 성인물 제외입니다. 정렬별 기준은 아래와 같습니다.
+
+| `sort` | TMDB 정렬 | 평가 수 | 합칠 때 정렬 |
+| --- | --- | --- | --- |
+| `popular` | `popularity.desc` | 200 이상 | 인기도 높은 순 |
+| `rating` | `vote_average.desc` | 200 이상 | 평점 높은 순, 같으면 평가 수 많은 순 |
+| `latest` | 영화 `primary_release_date.desc`, TV `first_air_date.desc` | 20 이상 | 개봉·첫 방영일 최신 순 |
+
+- 최신순은 한국 날짜 기준 오늘 이후 개봉·방영 예정작을 제외합니다. 막 공개된 작품은 평가 수 200을 채우기 어려워 기준을 20으로 낮췄습니다.
 
 ## 오류
 
 | 조건 | 상태 코드 | 오류 코드 |
 | --- | --- | --- |
-| 없는 장르 코드, 두 글자 ISO 코드가 아닌 국가 | 400 | VALIDATION_ERROR |
+| 없는 장르 코드, 두 글자 ISO 코드가 아닌 국가, `movie`·`tv`가 아닌 종류, 지원하지 않는 정렬 | 400 | VALIDATION_ERROR |
 | 토큰 누락·형식 오류·만료·위조·다른 앱 또는 Access Token 사용 | 401 | UNAUTHORIZED |
 | 사용자 상태가 DELETING 또는 DELETED | 401 | UNAUTHORIZED |
 | TMDB 호출 실패 | 502 | UPSTREAM_ERROR |
@@ -50,7 +62,7 @@ Authorization: Bearer <Cognito ID Token>
 
 ## 캐시
 
-- 장르·국가 조합(`ACTION|KR`, 필터 없음은 `ALL`)을 키로 결과를 **10분** 동안 보관합니다. 모든 사용자에게 같은 목록이므로 사용자 정보는 키에 넣지 않습니다.
+- 장르·국가·종류·정렬 조합(`ACTION|KR|tv|rating`, 필터 없음은 `ALL`, 정렬 생략은 `popular`)을 키로 결과를 **10분** 동안 보관합니다. 생략한 값은 기본값으로 바꾼 뒤 키를 만들므로 `sort`를 생략한 요청과 `sort=popular` 요청은 같은 캐시를 씁니다. 모든 사용자에게 같은 목록이므로 사용자 정보는 키에 넣지 않습니다.
 - 보관 시간은 `recomate.popular.cache-minutes`(환경 변수 `RECOMATE_POPULAR_CACHE_MINUTES`)로 조정합니다. 조합은 최대 500개까지 보관합니다.
 - 캐시는 Lambda 인스턴스 메모리에 있어 인스턴스끼리 공유하지 않습니다. 인스턴스가 새로 뜨면 첫 요청이 TMDB를 호출하고, 그 뒤 10분 동안은 호출하지 않습니다.
 - TMDB 실패(502)는 저장하지 않으므로 다음 요청이 다시 시도합니다.

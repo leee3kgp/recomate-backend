@@ -3,6 +3,7 @@ package com.recomate.popular;
 import com.recomate.common.ApiException;
 import com.recomate.genre.Genre;
 import com.recomate.recommendation.ContentType;
+import com.recomate.recommendation.tmdb.DiscoverSort;
 import com.recomate.recommendation.tmdb.TmdbClient;
 import com.recomate.recommendation.tmdb.TmdbContent;
 import com.recomate.user.IdentityDirectory;
@@ -60,14 +61,16 @@ class PopularApiTests {
 
     @Test
     void withoutFiltersMergesMoviesAndTvByPopularity() throws Exception {
-        when(tmdb.discoverPopular(ContentType.MOVIE, null, null))
+        when(tmdb.discoverPopular(ContentType.MOVIE, null, null, DiscoverSort.POPULAR))
                 .thenReturn(List.of(tmdbContent(1, ContentType.MOVIE, "영화A", 50)));
-        when(tmdb.discoverPopular(ContentType.TV, null, null))
+        when(tmdb.discoverPopular(ContentType.TV, null, null, DiscoverSort.POPULAR))
                 .thenReturn(List.of(tmdbContent(2, ContentType.TV, "드라마B", 90)));
         mvc.perform(get("/api/popular").with(jwt().jwt(token -> token.subject(OWNER))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.genre").isEmpty())
                 .andExpect(jsonPath("$.country").isEmpty())
+                .andExpect(jsonPath("$.type").isEmpty())
+                .andExpect(jsonPath("$.sort").value("popular"))
                 .andExpect(jsonPath("$.items.length()").value(2))
                 .andExpect(jsonPath("$.items[0].title").value("드라마B"))
                 .andExpect(jsonPath("$.items[0].type").value("tv"))
@@ -77,32 +80,32 @@ class PopularApiTests {
 
     @Test
     void filtersAreNormalizedAndPassedToTmdb() throws Exception {
-        when(tmdb.discoverPopular(any(), eq(Genre.ACTION), eq("KR"))).thenReturn(List.of());
+        when(tmdb.discoverPopular(any(), eq(Genre.ACTION), eq("KR"), any())).thenReturn(List.of());
         mvc.perform(get("/api/popular?genre=action&country=kr").with(jwt().jwt(token -> token.subject(OWNER))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.genre").value("ACTION"))
                 .andExpect(jsonPath("$.country").value("KR"));
-        verify(tmdb).discoverPopular(ContentType.MOVIE, Genre.ACTION, "KR");
-        verify(tmdb).discoverPopular(ContentType.TV, Genre.ACTION, "KR");
+        verify(tmdb).discoverPopular(ContentType.MOVIE, Genre.ACTION, "KR", DiscoverSort.POPULAR);
+        verify(tmdb).discoverPopular(ContentType.TV, Genre.ACTION, "KR", DiscoverSort.POPULAR);
     }
 
     @Test
     void genreWithoutTvMappingQueriesMoviesOnly() throws Exception {
-        when(tmdb.discoverPopular(any(), any(), any())).thenReturn(List.of());
+        when(tmdb.discoverPopular(any(), any(), any(), any())).thenReturn(List.of());
         mvc.perform(get("/api/popular?genre=HORROR").with(jwt().jwt(token -> token.subject(OWNER))))
                 .andExpect(status().isOk());
-        verify(tmdb).discoverPopular(ContentType.MOVIE, Genre.HORROR, null);
-        verify(tmdb, never()).discoverPopular(eq(ContentType.TV), any(), any());
+        verify(tmdb).discoverPopular(ContentType.MOVIE, Genre.HORROR, null, DiscoverSort.POPULAR);
+        verify(tmdb, never()).discoverPopular(eq(ContentType.TV), any(), any(), any());
     }
 
     @Test
     void blankFiltersAreTreatedAsAbsent() throws Exception {
-        when(tmdb.discoverPopular(any(), any(), any())).thenReturn(List.of());
+        when(tmdb.discoverPopular(any(), any(), any(), any())).thenReturn(List.of());
         mvc.perform(get("/api/popular").param("genre", "").param("country", " ")
                         .with(jwt().jwt(token -> token.subject(OWNER))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.genre").isEmpty());
-        verify(tmdb).discoverPopular(ContentType.MOVIE, null, null);
+        verify(tmdb).discoverPopular(ContentType.MOVIE, null, null, DiscoverSort.POPULAR);
     }
 
     @Test
@@ -123,11 +126,51 @@ class PopularApiTests {
     }
 
     @Test
+    void typeAndSortAreNormalizedEchoedAndPassedToTmdb() throws Exception {
+        when(tmdb.discoverPopular(any(), any(), any(), any())).thenReturn(List.of());
+        mvc.perform(get("/api/popular?type=TV&sort=Rating").with(jwt().jwt(token -> token.subject(OWNER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.type").value("tv"))
+                .andExpect(jsonPath("$.sort").value("rating"));
+        verify(tmdb).discoverPopular(ContentType.TV, null, null, DiscoverSort.RATING);
+        verify(tmdb, never()).discoverPopular(eq(ContentType.MOVIE), any(), any(), any());
+    }
+
+    @Test
+    void tvTypeWithGenreLackingTvMappingReturnsEmptyList() throws Exception {
+        mvc.perform(get("/api/popular?genre=HORROR&type=tv").with(jwt().jwt(token -> token.subject(OWNER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(0));
+        verifyNoInteractions(tmdb);
+    }
+
+    @Test
+    void latestMergesMoviesAndTvByReleaseDate() throws Exception {
+        when(tmdb.discoverPopular(ContentType.MOVIE, null, null, DiscoverSort.LATEST)).thenReturn(List.of(
+                new TmdbContent(1, ContentType.MOVIE, "옛 영화", null, 2025, 7.0, 100, 99, Set.of(Genre.ACTION), "2025-01-01")));
+        when(tmdb.discoverPopular(ContentType.TV, null, null, DiscoverSort.LATEST)).thenReturn(List.of(
+                new TmdbContent(2, ContentType.TV, "새 드라마", null, 2026, 7.0, 100, 1, Set.of(Genre.DRAMA), "2026-03-01")));
+        mvc.perform(get("/api/popular?sort=latest").with(jwt().jwt(token -> token.subject(OWNER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].title").value("새 드라마"))
+                .andExpect(jsonPath("$.items[1].title").value("옛 영화"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"type=anime", "type=movies", "sort=abc", "sort=popularity"})
+    void invalidTypeOrSortIsRejectedBeforeTmdb(String query) throws Exception {
+        mvc.perform(get("/api/popular?" + query).with(jwt().jwt(token -> token.subject(OWNER))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        verifyNoInteractions(tmdb);
+    }
+
+    @Test
     void upstreamFailureReturns502AndIsNotCached() throws Exception {
-        when(tmdb.discoverPopular(ContentType.MOVIE, null, null))
+        when(tmdb.discoverPopular(ContentType.MOVIE, null, null, DiscoverSort.POPULAR))
                 .thenThrow(ApiException.upstream())
                 .thenReturn(List.of(tmdbContent(1, ContentType.MOVIE, "영화A", 50)));
-        when(tmdb.discoverPopular(ContentType.TV, null, null)).thenReturn(List.of());
+        when(tmdb.discoverPopular(ContentType.TV, null, null, DiscoverSort.POPULAR)).thenReturn(List.of());
         mvc.perform(get("/api/popular").with(jwt().jwt(token -> token.subject(OWNER))))
                 .andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.error.code").value("UPSTREAM_ERROR"));

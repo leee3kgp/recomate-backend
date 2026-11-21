@@ -223,16 +223,20 @@ paths:
   /api/popular:
     get:
       operationId: listPopular
-      summary: Popular movies and TV, optionally filtered by genre and country
+      summary: Popular movies and TV, optionally filtered by genre, country and type, with a sort order
       description: |
-        Returns up to 20 titles, movies and TV merged and ordered by TMDB popularity. Both
-        filters are optional and may be combined; a blank value means no filter. genre is one
-        of the ten genre codes and country is a two-letter ISO 3166-1 code (KR, US, JP ...),
-        both case-insensitive. A genre with no TV mapping (ROMANCE, HORROR) returns movies only.
-        The applied filters are echoed back in upper case, or null when absent.
+        Returns up to 20 titles. All parameters are optional and may be combined; a blank value
+        means no filter. genre is one of the ten genre codes, country is a two-letter ISO 3166-1
+        code (KR, US, JP ...), type is movie or tv and sort is popular (default), rating or latest,
+        all case-insensitive. Without type, movies and TV are fetched separately and merged by the
+        same sort order. A genre with no TV mapping (ROMANCE, HORROR) returns movies only, and an
+        empty list with type=tv. rating and popular require at least 200 votes; latest requires 20
+        and excludes titles released after today (Asia/Seoul).
+        genre and country are echoed back in upper case and type in lower case, or null when
+        absent; sort is always echoed.
         Requires a login; the shared user-status check rejects withdrawing/withdrawn users.
         The list is identical for every user, so results are kept in instance memory for ten
-        minutes per genre/country combination. A TMDB failure is not cached.
+        minutes per genre|country|type|sort combination. A TMDB failure is not cached.
       parameters:
         - name: genre
           in: query
@@ -243,6 +247,16 @@ paths:
           required: false
           description: Two-letter ISO 3166-1 alpha-2 country code of origin
           schema: { type: string, pattern: '^[A-Za-z]{2}$', examples: [KR] }
+        - name: type
+          in: query
+          required: false
+          description: movie or tv (case-insensitive). Omit for both
+          schema: { type: string, examples: [tv] }
+        - name: sort
+          in: query
+          required: false
+          description: popular (default), rating or latest (case-insensitive)
+          schema: { type: string, default: popular, examples: [rating] }
       responses:
         '200':
           description: Popular titles for the requested filters; items may be empty
@@ -252,10 +266,12 @@ paths:
               example:
                 genre: ACTION
                 country: KR
+                type: tv
+                sort: rating
                 items:
                   - { id: 1399, type: tv, title: 예시 드라마, posterPath: /example.jpg, releaseYear: 2024, voteAverage: 8.1 }
         '400':
-          description: VALIDATION_ERROR - unknown genre code or a country that is not a valid two-letter code; TMDB is not called
+          description: VALIDATION_ERROR - unknown genre code, a country that is not a valid two-letter code, a type other than movie/tv or an unsupported sort; TMDB is not called
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -732,7 +748,7 @@ components:
     PopularList:
       type: object
       additionalProperties: false
-      required: [genre, country, items]
+      required: [genre, country, type, sort, items]
       properties:
         genre:
           oneOf:
@@ -743,6 +759,14 @@ components:
           type: [string, 'null']
           pattern: '^[A-Z]{2}$'
           description: Applied country filter in upper case, or null when none was given
+        type:
+          type: [string, 'null']
+          enum: [movie, tv, null]
+          description: Applied type filter, or null when movies and TV are merged
+        sort:
+          type: string
+          enum: [popular, rating, latest]
+          description: Applied sort order; popular when none was given
         items:
           type: array
           maxItems: 20

@@ -7,6 +7,8 @@ import com.recomate.genre.Genre;
 import com.recomate.recommendation.ContentType;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
@@ -25,6 +27,7 @@ import org.springframework.web.client.RestClientException;
 
 @Component
 public class RestClientTmdbClient implements TmdbClient {
+    private static final ZoneId KOREA = ZoneId.of("Asia/Seoul");
     private final RestClient http;
 
     public RestClientTmdbClient(
@@ -61,17 +64,21 @@ public class RestClientTmdbClient implements TmdbClient {
     }
 
     @Override
-    public List<TmdbContent> discoverPopular(ContentType type, Genre genre, String country) {
+    public List<TmdbContent> discoverPopular(ContentType type, Genre genre, String country, DiscoverSort sort) {
         List<Integer> ids = genre == null ? List.of() : TmdbGenreMapper.idsFor(type, List.of(genre));
         if (genre != null && ids.isEmpty()) return List.of(); // 이 매체에 매핑이 없는 장르 (예: TV의 로맨스·공포)
         try {
             DiscoverResponse body = http.get().uri(uriBuilder -> {
                 uriBuilder.path("/discover/{type}")
                         .queryParam("language", "ko-KR")
-                        .queryParam("sort_by", "popularity.desc")
-                        .queryParam("vote_count.gte", 200)
+                        .queryParam("sort_by", sort.sortBy(type))
+                        .queryParam("vote_count.gte", sort.minVotes())
                         .queryParam("include_adult", false)
                         .queryParam("page", 1);
+                // 최신순은 개봉·방영 전 작품을 제외한다.
+                if (sort == DiscoverSort.LATEST) {
+                    uriBuilder.queryParam(DiscoverSort.dateField(type) + ".lte", LocalDate.now(KOREA));
+                }
                 if (!ids.isEmpty()) uriBuilder.queryParam("with_genres", ids.get(0));
                 if (country != null) uriBuilder.queryParam("with_origin_country", country);
                 return uriBuilder.build(type.value());
@@ -193,7 +200,8 @@ public class RestClientTmdbClient implements TmdbClient {
         Integer year = (date != null && date.length() >= 4) ? Integer.valueOf(date.substring(0, 4)) : null;
         return new TmdbContent(item.id(), type, movie ? item.title() : item.name(), item.posterPath(), year,
                 item.voteAverage(), item.voteCount(), item.popularity(),
-                TmdbGenreMapper.toInternal(type, item.genreIds() == null ? List.of() : item.genreIds()));
+                TmdbGenreMapper.toInternal(type, item.genreIds() == null ? List.of() : item.genreIds()),
+                blankToNull(date));
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
