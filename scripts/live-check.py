@@ -157,12 +157,17 @@ def check_guest(c, args, http):
     codes = [g.get("code") for g in r.json().get("genres", [])] if r.status_code == 200 else []
     c.check("guest reads the genre catalog", sorted(codes) == sorted(GENRES), r.status_code)
     c.check("guest catalog response allows the frontend origin", r.headers.get("Access-Control-Allow-Origin") == origin)
-    body = {"participantCount": 2, "participants": [{"index": 1, "genres": ["SF", "ACTION"]},
+    body = {"participantCount": 2, "participants": [{"index": 1, "name": "민수", "genres": ["SF", "ACTION"]},
                                                     {"index": 2, "genres": ["COMEDY"]}]}
-    # Neither request below reaches TMDB: the body is rejected first, and so is the bad token.
+    # None of the requests below reaches TMDB: bad bodies are rejected first, and so is the bad token.
     r = http.post(args.api_base + "/api/guest/recommendations", timeout=60, json={
         "participantCount": 3, "participants": body["participants"]})
     c.check("guest invalid participants rejected", r.status_code == 400, r.status_code)
+    r = http.post(args.api_base + "/api/guest/recommendations", timeout=60, json={
+        "participantCount": 2, "participants": [{"index": 1, "name": "가" * 11, "genres": ["SF"]},
+                                                {"index": 2, "genres": ["COMEDY"]}]})
+    c.check("guest participant name over 10 characters rejected", r.status_code == 400
+            and error_code(r) == "VALIDATION_ERROR", r.status_code)
     r = http.post(args.api_base + "/api/guest/recommendations", headers={"Authorization": "Bearer not-a-jwt"},
                   json=body, timeout=60)
     c.check("guest route still rejects an invalid token", r.status_code == 401, r.status_code)
@@ -231,13 +236,22 @@ def check_user_flow(c, args, http, ddb, user):
 
     c.section("sessions, recommendations and exclusions")
     r = http.post(base + "/api/sessions", headers=user.headers(), timeout=60, json={
+        "participantCount": 2, "participants": [{"index": 1, "name": "가" * 11, "genres": ["ACTION"]},
+                                                {"index": 2, "genres": ["SF"]}]})
+    c.check("participant name over 10 characters rejected", r.status_code == 400
+            and error_code(r) == "VALIDATION_ERROR", r.status_code)
+    r = http.post(base + "/api/sessions", headers=user.headers(), timeout=60, json={
         "participantCount": 2,
-        "participants": [{"index": 1, "genres": ["ACTION", "SF"]}, {"index": 2, "genres": ["SF", "DRAMA"]}]})
+        "participants": [{"index": 1, "name": "  민수  ", "genres": ["ACTION", "SF"]},
+                         {"index": 2, "name": "   ", "genres": ["SF", "DRAMA"]}]})
     session_id = r.json().get("sessionId") if r.status_code == 201 else None
     c.check("session created", r.status_code == 201 and bool(session_id), r.status_code)
     if not session_id:
         return None
     path = f"{base}/api/sessions/{session_id}"
+    r = http.get(path, headers=user.headers(), timeout=60)
+    names = [p.get("name") for p in r.json().get("participants", [])] if r.status_code == 200 else None
+    c.check("participant names trimmed and blank saved as none", names == ["민수", None], names)
     r = http.get(base + "/api/sessions", headers=user.headers(), timeout=60)
     c.check("session appears in my list", r.status_code == 200
             and session_id in [s.get("sessionId") for s in r.json().get("sessions", [])], r.status_code)
@@ -369,7 +383,8 @@ def check_popular(c, args, http, user):
     """Members-only popular list: bad filters are rejected before TMDB; each valid filter set is one TMDB-backed call."""
     c.section("popular list")
     url = args.api_base + "/api/popular"
-    for label, query in [("genre", "?genre=NOT_A_GENRE"), ("country", "?country=ZZZ")]:
+    for label, query in [("genre", "?genre=NOT_A_GENRE"), ("country", "?country=ZZZ"),
+                         ("type", "?type=anime"), ("sort", "?sort=abc")]:
         r = http.get(url + query, headers=user.headers(), timeout=60)
         c.check(f"popular list rejects an unknown {label}", r.status_code == 400
                 and error_code(r) == "VALIDATION_ERROR", r.status_code)
@@ -386,6 +401,12 @@ def check_popular(c, args, http, user):
                 and (data.get("genre"), data.get("country")) == (genre, country)
                 and {i.get("type") for i in items} <= {"movie", "tv"}, f"{r.status_code}, {len(items)} titles")
     c.check("popular response allows the frontend origin", r.headers.get("Access-Control-Allow-Origin") == origin)
+    r = http.get(url + "?type=tv&sort=rating", headers=user.headers(), timeout=60)
+    data = r.json() if r.status_code == 200 else {}
+    items = data.get("items", [])
+    c.check("tv rating list returns tv titles and echoes type and sort", r.status_code == 200
+            and 0 < len(items) <= 20 and (data.get("type"), data.get("sort")) == ("tv", "rating")
+            and {i.get("type") for i in items} == {"tv"}, f"{r.status_code}, {len(items)} titles")
 
 
 def check_withdrawal(c, args, http, ddb, user, kept_session):
